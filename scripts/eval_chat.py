@@ -17,7 +17,7 @@ import time
 from fractions import Fraction
 
 from qqpu import circuits
-from qqpu.machine import CCX, CX, CZ, H, X, Z, trace
+from qqpu.machine import CCX, CX, CZ, H, S, T, X, Z, trace
 
 
 def p_state(nq, gates, state):
@@ -87,6 +87,26 @@ def items():
     g = [H(0), H(1), H(2), X(1), Z(2, 0, 1), X(1), H(2), CX(2, 0)]
     add("On 3 qubits: H on q0, q1, q2; X on q1; CCZ on q0, q1, q2; X on q1 again; H on q2; "
         "then CNOT q2->q0. What is the probability of measuring |001>?", p_state(3, g, 0b001))
+    # --- complex amplitudes: S, T, controlled phases (QPU v2) ---
+    add("On a single qubit, apply H, then T, then H. What is the probability of measuring 1?",
+        p_qubit(1, [H(0), T(0), H(0)], 0))
+    nq, g = circuits.phase_estimation("t")
+    add("Run quantum phase estimation for the T gate acting on its eigenstate |1>: use counting "
+        "qubits q0, q1, q2 (q0 least significant) and target q3 prepared with X; controlled-T "
+        "from q0, controlled-S (= T^2) from q1, controlled-Z (= T^4) from q2, then the inverse "
+        "QFT on q0..q2. What is the probability that the counting register reads 001 "
+        "(q2=0, q1=0, q0=1)?", float(sum(trace(g, nq).probabilities()[[0b0001, 0b1001]])))
+    nq, g = circuits.qft_basis(3, 5)
+    add("Prepare the 3-qubit basis state |101> (q2=1, q1=0, q0=1) and apply the quantum Fourier "
+        "transform. What is the probability of measuring |000>?", p_state(nq, g, 0))
+    add("Apply H, then S, then H to a single qubit. What is the probability of measuring 1?",
+        p_qubit(1, [H(0), S(0), H(0)], 0))
+    g = [H(0), CX(0, 1), T(1), CX(0, 1), H(0)]
+    add("Apply H to q0, CNOT q0->q1, T on q1, CNOT q0->q1, then H on q0. What is the "
+        "probability that q0 is measured as 1?", p_qubit(2, g, 0))
+    g = [H(0), H(1), S(1, 0), H(0), H(1)]
+    add("Apply H to q0 and q1, then a controlled-S gate (control q0, target q1), then H to q0 "
+        "and q1 again. What is the probability of measuring |00>?", p_state(2, g, 0))
     return out
 
 
@@ -113,6 +133,7 @@ def main() -> None:
     ap.add_argument("--out")
     ap.add_argument("--only")
     ap.add_argument("--max-new", type=int, default=1024)
+    ap.add_argument("--think", action="store_true", help="Qwen's thinking mode on")
     a = ap.parse_args()
     from qqpu.bridge import Chat
 
@@ -124,7 +145,7 @@ def main() -> None:
     for i in idx:
         it = its[i]
         t0 = time.time()
-        turn = chat.ask(it["question"] + SUFFIX, max_new=a.max_new)
+        turn = chat.ask(it["question"] + SUFFIX, max_new=a.max_new, think=a.think)
         ans = parse_answer(turn.text)
         ok = ans is not None and abs(ans - it["truth"]) < 1e-3
         right += ok
@@ -133,7 +154,8 @@ def main() -> None:
               f"calls={len(runs)} exact_runs={sum(bool(r.get('exact')) for r in runs)} "
               f"{time.time() - t0:.0f}s", flush=True)
         if fout:
-            fout.write(json.dumps({"i": i, "mode": a.mode, "model": a.model, "ok": ok,
+            fout.write(json.dumps({"i": i, "mode": a.mode, "think": a.think, "model": a.model,
+                                   "ok": ok,
                                    "truth": it["truth"], "answer": ans, "runs": runs,
                                    "qasm": turn.qasm, "text": turn.text}) + "\n")
             fout.flush()

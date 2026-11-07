@@ -108,7 +108,7 @@ def token_name(t: int) -> str:
         return f"<|q_amp {t - AMP0}|>"
     if k == "conf":
         x = t - CONF0
-        return f"<|q_conf {x & 7}{' c' if x >> 3 else ''}|>"
+        return f"<|q_conf {x & 7}{' c' if x >> 3 & 1 else ''}{f' r{x >> 4}' if x >> 4 else ''}|>"
     if k == "idx":
         return f"<|q_try {t - IDX0}|>"
     if k == "shot":

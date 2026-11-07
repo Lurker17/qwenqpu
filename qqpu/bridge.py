@@ -16,11 +16,11 @@ from fractions import Fraction
 import torch
 
 from qqpu.circuit import QPU
-from qqpu.hf import Device
+from qqpu.hf import Device, pick
 import math
 
 from qqpu.machine import (CCX, CX, CZ, END, NQ, NQC, SWAP, Gate, H, S, Sdg, T, Tdg, X, Y, Z,
-                          flatten, host_tokens, is_complex, trace, value)
+                          SHOT0, flatten, host_tokens, is_complex, kind, trace, value)
 
 SYSTEM = (
     "You are a helpful assistant with a quantum processing unit (QPU) built into your own "
@@ -35,7 +35,8 @@ SYSTEM = (
     "the circuit uses y, s, t or phases.\n"
     "- The QPU starts in |0...0>. q[0] is the least significant bit: results are bitstrings "
     "q[n-1]...q[0], as in Qiskit. So |101> means q[2]=1, q[1]=0, q[0]=1.\n"
-    "- Measurements are not needed: the QPU returns the exact final state.\n"
+    "- Measurements are not needed: the QPU returns the exact final state. Pass shots to "
+    "also get sampled measurement counts, like a real quantum computer.\n"
     "- Phase oracle marking a basis state s (flips the sign of |s>): x on every qubit where s "
     "has a 0, then ccz q[0],q[1],q[2]; (cz q[0],q[1]; for 2 qubits), then the same x gates "
     "again.\n"
@@ -55,7 +56,11 @@ TOOLS = [{
         "parameters": {
             "type": "object",
             "properties": {"qasm": {"type": "string",
-                                    "description": "The circuit in OpenQASM 2.0"}},
+                                    "description": "The circuit in OpenQASM 2.0"},
+                           "shots": {"type": "integer",
+                                     "description": "Optional: also measure every qubit this "
+                                                    "many times (1-64) and return the counts; "
+                                                    "circuits without y, s, t or phases only"}},
             "required": ["qasm"],
         },
     },
@@ -264,6 +269,7 @@ class Chat:
             self.c = QPU()
             self.dev = Device(self.c, tc.linear_num_key_heads, tc.linear_num_value_heads)
         self.im_end = self.tok.convert_tokens_to_ids("<|im_end|>")
+        self.gen = torch.Generator(device=device).manual_seed(int(time.time()))
 
     # --- low level --------------------------------------------------------------------------
 
@@ -289,19 +295,25 @@ class Chat:
                 break
         return self.tok.decode(out)
 
-    def _qpu(self, nq: int, gates: list[Gate], check: bool) -> dict:
+    def _qpu(self, nq: int, gates: list[Gate], check: bool, shots: int = 0) -> dict:
+        if shots and is_complex(gates):
+            raise QasmError("shots are supported only for circuits of h, x, z, cx, cz, ccx, "
+                            "ccz, swap; call again without shots")
+        shots = max(0, min(int(shots), 64))
         if self.mode == "host":
             t0 = time.time()
-            tr = trace(gates, nq)
+            tr = trace(gates, nq, shots=shots, seed=int(time.time()))
             return {"nq": nq, "gates": len(gates), "tokens": 0, "k": tr.k, "amps": tr.amps,
                     "seconds": time.time() - t0, "ended": True, "host": True,
-                    "complex": tr.cplx}
-        host = host_tokens(gates, nq)
+                    "complex": tr.cplx, "outcomes": tr.outcomes}
+        host = host_tokens(gates, nq, shots=shots)
         t0 = time.time()
         logits = self._feed([self.v0 + t for t in host])
         toks = []
         while True:
-            t = int(logits.argmax()) - self.v0  # the model's own greedy choice, full vocabulary
+            # the model's own choice over the full vocabulary: greedy, with uniform tie-breaking
+            # (the zero-temperature limit of sampling) where the circuit flips coins
+            t = pick(logits, self.gen) - self.v0
             toks.append(t)
             if t == END or len(toks) > 20000 or t < 0:
                 break
@@ -311,21 +323,24 @@ class Chat:
         tr = trace(gates, nq)
         amps = self.dev.read(self.cache, nq, tr.cplx, tr.final_buffer)
         run = {"nq": nq, "gates": len(gates), "tokens": len(toks), "k": tr.k, "amps": amps,
-               "seconds": time.time() - t0, "ended": t == END, "complex": tr.cplx}
-        if check:
-            run["exact"] = toks == tr.tokens[len(host):] and amps == tr.amps
+               "seconds": time.time() - t0, "ended": t == END, "complex": tr.cplx,
+               "outcomes": [x - SHOT0 for x in toks if kind(x) == "shot"]}
+        if check:  # the deterministic part (the gates) must equal the reference
+            ngate = len(tr.tokens) - len(host_tokens(gates, nq)) - 1
+            run["exact"] = (toks[:ngate] == tr.tokens[len(host_tokens(gates, nq)):][:ngate]
+                            and amps == tr.amps)
         return run
 
     # --- a conversation ---------------------------------------------------------------------
 
     def ask(self, question: str, max_new: int = 768, check: bool = True,
-            max_calls: int = 3) -> Turn:
+            max_calls: int = 3, think: bool = False) -> Turn:
         t0 = time.time()
         system = SYSTEM_NONE if self.mode == "none" else SYSTEM.format(nq=NQ, nqc=NQC)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": question}]
         prompt = self.tok.apply_chat_template(
             msgs, tools=None if self.mode == "none" else TOOLS, add_generation_prompt=True,
-            tokenize=False, enable_thinking=False)
+            tokenize=False, enable_thinking=think)
         self.cache, self.ids = None, []
         logits = self._feed(self.tok.encode(prompt))
         turn = Turn("")
@@ -340,9 +355,15 @@ class Chat:
             turn.qasm.append(qasm)
             try:
                 nq, gates = parse_qasm(qasm)
-                run = self._qpu(nq, gates, check)
+                sm = re.search(r"<parameter=shots>\s*(\d+)\s*</parameter>", text)
+                run = self._qpu(nq, gates, check, int(sm[1]) if sm else 0)
                 turn.runs.append(run)
                 result = format_result(run["amps"], run["k"], nq, run["tokens"])
+                if run["outcomes"]:
+                    from collections import Counter
+                    cnt = Counter(run["outcomes"])
+                    result += (f"\nMeasured {len(run['outcomes'])} shots (sampled by the QPU): "
+                               + ", ".join(f"{i:0{nq}b}: {n}" for i, n in sorted(cnt.items())))
             except (QasmError, Exception) as e:  # noqa: BLE001 - the error goes back to Qwen
                 result = f"Error: {e}"
                 turn.runs.append({"error": str(e)})
