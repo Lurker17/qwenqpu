@@ -1,0 +1,588 @@
+<title>qwenQPU</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&family=Kalam:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column (~66ch) with figures that break out wider, drawn like whiteboard sketches */
+:root {
+  --paper: #f7f8f6;
+  --ink: #1f2430;
+  --muted: #5d6573;
+  --rule: #d9dde3;
+  --accent: #1f6fb2;      /* the QPU: ink blue */
+  --qwen: #8a6d1f;        /* Qwen's own layers: ochre */
+  --mark: #ffd84d;        /* highlighter */
+  --good: #2f8a57;
+  --bad: #b8433a;
+  --chip: #eef1f5;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --hand: "Kalam", "Comic Neue", "Segoe Print", cursive;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #15181e; --ink: #e6e8ec; --muted: #9aa3b2; --rule: #2c323c;
+    --accent: #6fb3ef; --qwen: #d9b55a; --mark: #8a7420; --good: #5cc48a; --bad: #e57f74;
+    --chip: #1f242c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #15181e; --ink: #e6e8ec; --muted: #9aa3b2; --rule: #2c323c;
+  --accent: #6fb3ef; --qwen: #d9b55a; --mark: #8a7420; --good: #5cc48a; --bad: #e57f74;
+  --chip: #1f242c; color-scheme: dark;
+}
+body {
+  background: var(--paper); color: var(--ink);
+  font: 400 1.13rem/1.62 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 44rem; margin: 0 auto; padding-block: 3.5rem 5rem; }
+h1, h2 { font-family: var(--display); text-wrap: balance; line-height: 1.12; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.1rem, 5vw, 3.1rem); font-weight: 700; margin: 0.4rem 0 1rem; }
+h2 { font-size: 1.5rem; font-weight: 700; margin: 3rem 0 0.6rem; }
+p { margin: 0 0 1.05rem; }
+.kicker { font: 600 0.78rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 1.28rem; line-height: 1.55; color: var(--ink); }
+.byline { font: 400 0.85rem/1.4 var(--mono); color: var(--muted); margin-bottom: 2rem; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; background: var(--chip); padding: 0.08em 0.32em; border-radius: 4px; }
+pre { font: 400 0.84rem/1.5 var(--mono); background: var(--chip); padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; }
+mark { background: linear-gradient(transparent 55%, var(--mark) 55%); color: inherit; padding: 0 0.1em; }
+a { color: var(--accent); }
+figure { margin: 2rem -6rem; }
+@media (max-width: 64rem) { figure { margin: 2rem 0; } }
+.fig { background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; padding: 0.75rem; overflow-x: auto; }
+.fig svg { display: block; width: 100%; height: auto; min-width: 560px; color: var(--ink); }
+figcaption { font: 400 0.95rem/1.5 var(--body); color: var(--muted); margin: 0.6rem 0.25rem 0; max-width: 44rem; }
+figcaption b { color: var(--ink); font-weight: 600; }
+.hand { font-family: var(--hand); }
+svg text { fill: currentColor; }
+.c-ink { color: var(--ink); } .c-acc { color: var(--accent); } .c-qwen { color: var(--qwen); }
+.c-mark { color: var(--mark); } .c-good { color: var(--good); } .c-bad { color: var(--bad); }
+.c-muted { color: var(--muted); } .c-rule { color: var(--rule); }
+.controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.6rem 0.25rem 0; font: 400 0.9rem var(--mono); }
+.controls button { font: 600 0.85rem var(--mono); color: var(--ink); background: var(--chip); border: 1px solid var(--rule); border-radius: 6px; padding: 0.35rem 0.7rem; cursor: pointer; }
+.controls button:focus-visible, .controls input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls input[type=range] { flex: 1 1 12rem; min-width: 0; accent-color: var(--accent); }
+.tape { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.55rem 0.25rem 0; min-height: 1.9rem; }
+.tape span { font: 400 0.78rem/1 var(--mono); padding: 0.32rem 0.45rem; border-radius: 5px; background: var(--chip); border: 1px solid var(--rule); }
+.tape span.gate { color: var(--accent); border-color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 0.98rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 600 0.78rem/1.3 var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td.num { text-align: right; font-family: var(--mono); font-size: 0.9rem; }
+.tablewrap { overflow-x: auto; margin: 1.2rem 0 1.4rem; }
+.bar { display: inline-block; height: 0.62rem; background: var(--accent); border-radius: 2px; vertical-align: middle; margin-right: 0.4rem; }
+.bar.q { background: var(--qwen); } .bar.m { background: var(--muted); }
+ol.principles { padding-left: 1.3rem; } ol.principles li { margin-bottom: 0.7rem; }
+.foot { margin-top: 3rem; font-size: 0.95rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 1.2rem; }
+@media (prefers-reduced-motion: reduce) { .scroll { animation: none !important; } }
+@keyframes scrollx { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+</style>
+
+<main>
+<div class="kicker">Experiment · November 2026</div>
+<h1>Qwen runs quantum circuits in its own weights</h1>
+<p class="byline">qwenQPU · built on the Qwenputer compiler · Qwen3.5-4B</p>
+
+<p class="lede">We took a stock Qwen3.5-4B and put 16 extra layers in front of its own 32. Nobody trained those layers. A compiler set every weight, and together they form a small quantum computer simulator: up to five qubits, exact arithmetic, and measurements sampled by the model itself.</p>
+
+<p>When Qwen needs a circuit simulated, it writes OpenQASM in an ordinary tool call. A thin host program translates the gate names into instruction words and hands them back to the model. From there the model writes out every amplitude of every gate as a token, and the final state matches Qiskit's statevector exactly, with no rounding anywhere.</p>
+
+<p>This is a classical simulation. A register of <i>n</i> qubits has 2<sup><i>n</i></sup> amplitudes, each gate here costs 2<sup><i>n</i></sup> tokens, and nothing gets faster than a laptop running Qiskit. So why build it? Because it shows that a language model can carry an exact, checkable machine inside its own forward pass. The idea comes from <a href="https://github.com/divagr18/qwenputer">Qwenputer</a>, which compiled a RISC-V CPU into Qwen's weights, and <a href="https://github.com/vixhal-baraiya/qwenGPU">qwenGPU</a>, which did the same for a small CUDA GPU. We wanted to see whether the trick survives a machine whose state is a vector of amplitudes.</p>
+
+<figure>
+  <div class="fig"><svg id="fig1" viewBox="0 0 860 330" role="img" aria-label="Pipeline: Qwen writes QASM, the host translates it into instruction words, the QPU layers in front of Qwen's layers write the run token by token, the host reads the final state from the model's memory and returns it to Qwen."></svg></div>
+  <figcaption><b>Figure 1.</b> One tool call, end to end. The host only translates gate names into instruction words, much as a compiler driver would. From the first <span class="mono">GATE</span> token on, the model writes everything: which amplitude comes next, its value, and when the run ends. Qwen's own 32 layers are switched off on these tokens, so its context passes through the run untouched.</figcaption>
+</figure>
+
+<h2>A memory made of attention state</h2>
+
+<p>Qwen3.5 interleaves ordinary attention with Gated DeltaNet layers. A DeltaNet head doesn't keep a growing cache of past tokens. It keeps one fixed 128&times;128 matrix and updates it at every token with the delta rule. Read the rule with two special inputs and something useful falls out. If the key is one-hot, pointing at row <i>r</i>, the update replaces row <i>r</i> with the value vector and leaves every other row alone. If the query is one-hot, the head returns row <i>r</i>. That is a RAM with 128 addressable cells per head.</p>
+
+<p>Qwenputer found this and used it for a CPU's registers and memory. We use it for the quantum state: one row per basis state, holding that amplitude as 16 bits. A three-qubit state is eight rows.</p>
+
+<figure>
+  <div class="fig"><svg id="fig2" viewBox="0 0 860 330" role="img" aria-label="A DeltaNet head's state matrix used as memory: a one-hot key overwrites the row for basis state 101 with the bits of 176, then a one-hot query reads that row back."></svg></div>
+  <figcaption><b>Figure 2.</b> A DeltaNet head used as memory. Each row holds one amplitude in binary, plus two ballast columns that keep the head's output normalization exact. A one-hot key writes a row in one step; a one-hot query reads it back. Here row <span class="mono">|101&gt;</span> receives 176, the integer amplitude Grover's search ends with.</figcaption>
+</figure>
+
+<h2>A gate is a burst of tokens</h2>
+
+<p>A forward pass has fixed depth, so it can't loop over 32 amplitudes. The loop has to happen in the token stream instead. Applying a Hadamard to qubit <i>q</i> pairs up amplitudes whose index differs only in bit <i>q</i>, and each pair becomes (<i>a</i><sub>0</sub>+<i>a</i><sub>1</sub>, <i>a</i><sub>0</sub>&minus;<i>a</i><sub>1</sub>). The model walks those pairs and emits each new amplitude as one token. Each 16-bit token comes from a single forward pass, which does four things:</p>
+
+<p>It counts how many values it has written since the <span class="mono">GATE</span> token, which tells it which amplitude is due. It reads that amplitude and its partner from memory. It adds or subtracts them. Then it writes the result's bits into the output so that the next token's id <em>is</em> the result. When that token is fed back in, the memory heads store it. The model's sampling loop becomes the machine's clock.</p>
+
+<p>The arithmetic is less exotic than it sounds. With the right scaling, a SwiGLU unit computes <i>a</i>&middot;relu(<i>b</i>) exactly. For an integer <i>z</i>, relu(<i>z</i>&minus;&theta;+1) &minus; relu(<i>z</i>&minus;&theta;) is 1 when <i>z</i> &ge; &theta; and 0 otherwise, so two units make an exact step function. Enough steps give you "bit 3 of this 5-bit sum", and two MLP layers of those make a carry-lookahead adder for 16 bits. The output side works the same way in reverse. The last layer writes the 17 bits of the token id it wants into a few dimensions that the language-model head reads, so that token wins the argmax by a wide margin.</p>
+
+<p>Step through Grover's search below. Every bar is a number the model wrote.</p>
+
+<figure>
+  <div class="fig"><svg id="fig3" viewBox="0 0 860 330" role="img" aria-label="Interactive bar chart of the eight amplitudes of a three-qubit Grover search after each gate."></svg></div>
+  <div class="controls">
+    <button id="g-prev" type="button" aria-label="Previous gate">&#9664;</button>
+    <button id="g-play" type="button">Play</button>
+    <button id="g-next" type="button" aria-label="Next gate">&#9654;</button>
+    <input id="g-slider" type="range" min="0" max="35" value="35" aria-label="Gate">
+    <span id="g-label" class="mono"></span>
+  </div>
+  <div class="tape" id="g-tape" aria-live="polite"></div>
+  <figcaption><b>Figure 3.</b> Three-qubit Grover search for <span class="mono">|101&gt;</span>, two iterations, 35 gates. The bars show amplitudes after each gate (integer &divide; &radic;2<sup>k</sup>, where <i>k</i> counts Hadamards so far). The chips under the chart are the tokens the model wrote for the selected gate, in the order it wrote them: pair by pair, the |0&#x27E9; partner first. The run ends with 176/&radic;2<sup>15</sup> on the marked state, a probability of 0.9453.</figcaption>
+</figure>
+
+<h2>Reading old values while writing new ones</h2>
+
+<p>Writing in place breaks the walk. The new <i>a</i><sub>0</sub> overwrites the old <i>a</i><sub>0</sub>, but the very next token, the new <i>a</i><sub>1</sub>, still needs it. So the machine keeps two copies of the state and alternates them. Gate <i>g</i> reads buffer <i>g</i> mod 2 and writes the other one, so every value is computed from the state as it stood before the gate.</p>
+
+<p>Each buffer is also stored twice, because a head answers only one query per token and every value needs two amplitudes, its own and its partner's. With the complex mode described below, that comes to 16 memory heads in a single layer. A Qwen3.5-4B layer has exactly 16, so the layout just fits.</p>
+
+<figure>
+  <div class="fig"><svg id="fig4" viewBox="0 0 860 290" role="img" aria-label="Two state buffers: a Hadamard on qubit 1 reads pairs of amplitudes from buffer 0 and writes their sums and differences into buffer 1."></svg></div>
+  <figcaption><b>Figure 4.</b> A Hadamard on q1 over three qubits. It pairs rows 0&ndash;2, 1&ndash;3, 4&ndash;6 and 5&ndash;7, reads both members of each pair from one buffer and writes sum and difference into the other. The circled numbers are the order of the model's tokens. The next gate reads from the right-hand buffer and writes back into the left.</figcaption>
+</figure>
+
+<h2>Why the answers are exact</h2>
+
+<p>The model runs in bf16, which keeps only 8 significant bits. The compiler copes by never letting a value get large. Everything inside the circuit is a bit, a one-hot vector or an integer up to 256, and Qwenputer's evaluator checks every intermediate against bf16 rounding before a single weight is written.</p>
+
+<p>That rules out floating-point amplitudes, so the machine doesn't use them. It stores integers and keeps one shared scale, 1/&radic;2<sup><i>k</i></sup>. A Hadamard adds or subtracts and bumps <i>k</i>. X, CNOT and Toffoli move amplitudes around. Z flips a sign. None of these ever produce a fraction.</p>
+
+<p>Phases need one more idea. With S and T gates the amplitudes live in the ring of integers over &omega; = e<sup>i&pi;/4</sup>, so each amplitude becomes four integers, <i>a</i><sub>0</sub> + <i>a</i><sub>1</sub>&omega; + <i>a</i><sub>2</sub>&omega;<sup>2</sup> + <i>a</i><sub>3</sub>&omega;<sup>3</sup>. Multiplying by &omega; then needs no multiplier at all. It shifts the four integers one place and negates the one that wraps around, because &omega;<sup>4</sup> = &minus;1. That covers the 3-qubit QFT and phase estimation of the T gate, which reads out exactly <span class="mono">001</span>, i.e. 1/8.</p>
+
+<figure>
+  <div class="fig"><svg id="fig5" viewBox="0 0 860 230" role="img" aria-label="Multiplying a ring element by omega shifts its four integer components one place and negates the component that wraps around."></svg></div>
+  <figcaption><b>Figure 5.</b> A T gate multiplies an amplitude by &omega;. In this representation that is a rotation of four integers and one negation, which the circuit does by choosing which component feeds each output and whether to complement it. S is two steps round the circle, Z four.</figcaption>
+</figure>
+
+<p>The cost of exactness is a fixed gate set. Rotations by arbitrary angles such as <span class="mono">rz(0.3)</span> fall outside this ring and would need approximating with sequences of H and T. Complex circuits also carry four tokens per amplitude, so that mode stops at four qubits.</p>
+
+<h2>Measuring with the model's own dice</h2>
+
+<p>A real quantum computer returns samples, not amplitudes, and a language model happens to come with a sampler. The trick is ties. If the circuit leaves an output bit undecided, the two tokens that differ only in that bit get bit-identical logits, and any sampler picks between them with probability exactly ½, at any temperature. Leave <i>m</i> bits open and you get a uniform random <i>m</i>-bit number.</p>
+
+<p>Turning fair coins into the Born rule, P(<i>i</i>) &prop; |<i>a</i><sub><i>i</i></sub>|<sup>2</sup>, is a rejection sampler. The model draws a random basis state <i>i</i> and two random numbers <i>u</i><sub>1</sub>, <i>u</i><sub>2</sub> below 2<sup><i>m</i></sup>. It accepts <i>i</i> if both numbers fall below |<i>a</i><sub><i>i</i></sub>|. The chance of that is (|<i>a</i><sub><i>i</i></sub>| / 2<sup><i>m</i></sup>)<sup>2</sup>, which is proportional to |<i>a</i><sub><i>i</i></sub>|<sup>2</sup>, so accepted states follow the Born distribution exactly. The circuit never multiplies anything. It takes an absolute value and does two comparisons.</p>
+
+<figure>
+  <div class="fig"><svg id="fig6" viewBox="0 0 860 330" role="img" aria-label="Left: at a random-number step, several tokens tie for the highest logit. Right: random points in a square; points inside the smaller square of side |a| are accepted, with probability (|a|/2^m)^2."></svg></div>
+  <figcaption><b>Figure 6.</b> Left: at a random step the top logits tie exactly, so the sampler acts as a fair die over them; every other token sits far below. Right: one trial is a random point (<i>u</i><sub>1</sub>, <i>u</i><sub>2</sub>), accepted when it lands in the |<i>a</i>|&times;|<i>a</i>| corner, so acceptance follows area, which is |<i>a</i>|<sup>2</sup>. On the merged Qwen3.5-4B, 32 Bell shots came out 14 &times; <span class="mono">00</span> and 18 &times; <span class="mono">11</span>. On the circuit-only checkpoint, 62 of 64 Grover shots landed on <span class="mono">101</span> (Born rule: 94.5%).</figcaption>
+</figure>
+
+<h2>Does Qwen use it well?</h2>
+
+<p>We asked Qwen3.5-4B 22 questions about circuits, each with one exact probability as the answer. Every circuit the model ran on its QPU was token-exact against the reference: 19 runs and 9,107 model-written tokens, with no mistakes. Merging the QPU barely touches Qwen's text: the KL divergence from the base model's next-token distribution is 4.8&times;10<sup>&minus;4</sup>, and the top token agreed at all 50 positions we checked.</p>
+
+<div class="tablewrap"><table>
+  <thead><tr><th>Questions</th><th>No tool<sup>*</sup></th><th>With its QPU</th></tr></thead>
+  <tbody>
+    <tr><td>Gate-by-gate descriptions<br><span class="c-muted" style="font-size:0.9em">"apply H to q0, then CNOT q0&rarr;q1, then T on q1&hellip;"</span></td><td class="num"><span class="bar m" style="width:1.3rem"></span>2 of 12</td><td class="num"><span class="bar" style="width:8rem"></span>16 of 16</td></tr>
+    <tr><td>Named algorithms Qwen must build<br><span class="c-muted" style="font-size:0.9em">Grover, Deutsch&ndash;Jozsa, QFT, phase estimation</span></td><td class="num">0 of 4</td><td class="num">0 of 6</td></tr>
+  </tbody>
+</table>
+<p class="c-muted" style="font-size:0.9rem;margin-top:0.4rem"><sup>*</sup> Same model, thinking off, 1,024-token budget, run on the first 16 questions. Most attempts ran out of budget mid-derivation.</p></div>
+
+<p>The split tells the story. Given an explicit gate sequence, Qwen copies it into QASM correctly every time and the QPU does the rest. Asked to build Grover, Deutsch&ndash;Jozsa, a QFT or phase estimation from the name alone, the 4B model writes a wrong circuit or runs out of tokens explaining it, and the QPU then answers the wrong question exactly. We checked that the machine isn't the bottleneck by putting a host-side simulator behind the same tool in an earlier run: it scored 13 of 16 where the QPU scored 12. The difference is Qwen's own text drifting slightly between the two runs, not the QPU.</p>
+
+<h2>Limits</h2>
+
+<div class="tablewrap"><table>
+  <tbody>
+    <tr><th>Size</th><td>5 qubits with real gates; 4 with S, T and phases.</td></tr>
+    <tr><th>Gates</th><td>H, X, Y, Z, S, T and their inverses, any of them (except H) with controls. No arbitrary rotation angles. About 28 Hadamards per circuit before 16-bit amplitudes could overflow.</td></tr>
+    <tr><th>Speed</th><td>One token per amplitude per gate, four with phases. A 3-qubit Grover search is 316 tokens (23 s); phase estimation is about 1,000 (77 s). That is with a plain Hugging Face decoding loop at ~14 tokens/s, nothing optimized.</td></tr>
+    <tr><th>Footprint</th><td>Qwen's hidden size grows from 2560 to 3200, about 16 GB in bf16. Qwenputer's trick of sharing Qwen's own dimensions would shrink that; we haven't applied it yet.</td></tr>
+  </tbody>
+</table></div>
+
+<h2>What made it work</h2>
+
+<ol class="principles">
+  <li><b>State lives in recurrent memory, loops live in the token stream, and a forward pass only does fixed-depth arithmetic.</b> That division is what lets a transformer run an algorithm of any length.</li>
+  <li><b>Pick a number system the hardware can't round.</b> Bits, small integers and the ring Z[&omega;] keep every value exact in bf16. Floats would have made exact matching against Qiskit impossible.</li>
+  <li><b>Each generated token is one 16-bit write.</b> The token id carries the data, so the machine's trace is the model's output and anyone can replay it.</li>
+  <li><b>The host translates, the model computes.</b> The host turns QASM into instruction words and reads the result back. Every value in between comes from the weights and is checked token by token against a reference.</li>
+  <li><b>The sampler is hardware too.</b> Exactly tied logits are fair coins, and fair coins plus comparisons give exact Born-rule sampling.</li>
+</ol>
+
+<p class="foot">Built on Divyansh Agrawal's <a href="https://github.com/divagr18/qwenputer">Qwenputer</a> transformer compiler (MIT), following <a href="https://github.com/vixhal-baraiya/qwenGPU">qwenGPU</a>'s merge recipe. Verified with Qwenputer's exact evaluator (bf16 checked at every intermediate), the stock <span class="mono">transformers</span> Qwen3.5 classes on an A100, and Qiskit 2.6 as ground truth. Circuits run: Bell, GHZ (3 and 5 qubits), Deutsch&ndash;Jozsa, Bernstein&ndash;Vazirani, Grover (2 and 3 qubits), superdense coding, teleportation, SWAP, the 3-qubit QFT, and phase estimation of T and S.</p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/roughjs@4.6.6/bundled/rough.js"></script>
+<script>
+(() => {
+const NS = "http://www.w3.org/2000/svg";
+const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// A sketch pen: rough.js when it loads, plain SVG otherwise. Colors come from CSS classes
+// (currentColor), so both themes work.
+function pen(svg) {
+  const rc = window.rough ? rough.svg(svg) : null;
+  let seed = 7;
+  const base = (o) => ({ roughness: o.rough ?? 1.1, bowing: 0.8, strokeWidth: o.sw ?? 1.5,
+    stroke: "currentColor", seed: o.seed ?? seed++ });
+  function group(cls, parent) { return el("g", { class: cls }, parent || svg); }
+  return {
+    g: group,
+    rect(x, y, w, h, o = {}) {
+      const g = group(o.cls || "c-ink", o.parent);
+      if (o.fill) {
+        const fg = group(o.fill, g);
+        if (rc) fg.appendChild(rc.rectangle(x, y, w, h, { ...base(o), stroke: "none",
+          fill: "currentColor", fillStyle: o.fs || "hachure", hachureGap: o.gap || 5,
+          fillWeight: 1.1, hachureAngle: -41 }));
+        else el("rect", { x, y, width: w, height: h, fill: "currentColor", opacity: 0.25 }, fg);
+      }
+      if (o.sw !== 0) {
+        if (rc) g.appendChild(rc.rectangle(x, y, w, h, base(o)));
+        else el("rect", { x, y, width: w, height: h, fill: "none", stroke: "currentColor",
+          "stroke-width": o.sw ?? 1.5, rx: 3 }, g);
+      }
+      return g;
+    },
+    line(x1, y1, x2, y2, o = {}) {
+      const g = group(o.cls || "c-ink", o.parent);
+      if (rc) g.appendChild(rc.line(x1, y1, x2, y2, base(o)));
+      else el("line", { x1, y1, x2, y2, stroke: "currentColor", "stroke-width": o.sw ?? 1.5 }, g);
+      return g;
+    },
+    arrow(x1, y1, x2, y2, o = {}) {
+      const g = this.line(x1, y1, x2, y2, o);
+      const a = Math.atan2(y2 - y1, x2 - x1), L = o.head ?? 11;
+      for (const s of [-1, 1]) {
+        const xa = x2 - L * Math.cos(a + s * 0.45), ya = y2 - L * Math.sin(a + s * 0.45);
+        if (rc) g.appendChild(rc.line(x2, y2, xa, ya, base(o)));
+        else el("line", { x1: x2, y1: y2, x2: xa, y2: ya, stroke: "currentColor", "stroke-width": o.sw ?? 1.5 }, g);
+      }
+      return g;
+    },
+    curve(pts, o = {}) {
+      const g = group(o.cls || "c-ink", o.parent);
+      if (rc) g.appendChild(rc.curve(pts, base(o)));
+      else el("polyline", { points: pts.map(p => p.join(",")).join(" "), fill: "none",
+        stroke: "currentColor", "stroke-width": o.sw ?? 1.5 }, g);
+      return g;
+    },
+    circle(cx, cy, d, o = {}) {
+      const g = group(o.cls || "c-ink", o.parent);
+      if (rc) g.appendChild(rc.circle(cx, cy, d, { ...base(o), fill: o.fill ? "currentColor" : undefined,
+        fillStyle: "solid" }));
+      else el("circle", { cx, cy, r: d / 2, fill: o.fill ? "currentColor" : "none",
+        stroke: "currentColor", "stroke-width": o.sw ?? 1.5 }, g);
+      return g;
+    },
+    text(x, y, s, o = {}) {
+      const t = el("text", { x, y, class: (o.cls || "c-ink") + " hand", "font-size": o.size || 17,
+        "text-anchor": o.anchor || "start", "font-weight": o.bold ? 700 : 400 }, o.parent || svg);
+      if (o.mono) { t.setAttribute("class", (o.cls || "c-ink")); t.setAttribute("font-family", "JetBrains Mono, monospace"); }
+      t.textContent = s;
+      return t;
+    },
+  };
+}
+
+/* ---------------- Figure 1: the pipeline ---------------- */
+function fig1() {
+  const svg = document.getElementById("fig1"), p = pen(svg);
+  p.rect(14, 30, 170, 104, { fill: "c-mark", gap: 7 });
+  p.text(99, 62, "Qwen writes", { anchor: "middle", bold: true });
+  p.text(99, 84, "OpenQASM", { anchor: "middle", bold: true });
+  p.text(99, 112, "h q[0]; cx q[0],q[1];", { anchor: "middle", size: 12, mono: true, cls: "c-muted" });
+  p.arrow(190, 82, 238, 82);
+  p.rect(244, 30, 170, 104);
+  p.text(329, 62, "host translates", { anchor: "middle", bold: true });
+  p.text(329, 84, "gates → ROM words", { anchor: "middle" });
+  p.text(329, 112, "(like clang → PTX)", { anchor: "middle", size: 14, cls: "c-muted" });
+  p.arrow(420, 82, 466, 82);
+  // the model
+  p.rect(472, 14, 374, 222, { sw: 1.8 });
+  p.text(486, 40, "the model (one forward pass per token)", { size: 15, cls: "c-muted" });
+  for (let i = 0; i < 16; i++) p.rect(488 + i * 7.2, 54, 4.6, 104, { cls: "c-acc", fill: "c-acc", fs: "solid", sw: 0.8, rough: 0.6 });
+  for (let i = 0; i < 32; i++) p.rect(612 + i * 6.8, 54, 4.2, 104, { cls: "c-qwen", fill: "c-qwen", fs: "solid", sw: 0.8, rough: 0.6 });
+  p.text(545, 180, "16 QPU layers", { anchor: "middle", size: 15, cls: "c-acc", bold: true });
+  p.text(545, 198, "compiled, not trained", { anchor: "middle", size: 13, cls: "c-acc" });
+  p.text(731, 180, "Qwen's 32 layers", { anchor: "middle", size: 15, cls: "c-qwen", bold: true });
+  p.text(731, 198, "unchanged; muted on QPU tokens", { anchor: "middle", size: 13, cls: "c-qwen" });
+  // token tape
+  const tapeG = el("g", {}, svg);
+  const clip = el("clipPath", { id: "tapeclip" }, el("defs", {}, svg));
+  el("rect", { x: 486, y: 206, width: 346, height: 26 }, clip);
+  tapeG.setAttribute("clip-path", "url(#tapeclip)");
+  const inner = el("g", { class: "scroll" }, tapeG);
+  const toks = ["GATE 7", "0x0002", "0x0000", "0x0002", "0x0000", "0x0000", "0x0002", "0x0002", "0x0000", "GATE 8"];
+  let x = 488;
+  for (let r = 0; r < 2; r++) for (const t of toks) {
+    const w = t.startsWith("GATE") ? 62 : 54;
+    el("rect", { x, y: 209, width: w, height: 20, rx: 4, class: t.startsWith("GATE") ? "c-acc" : "c-muted",
+      fill: "none", stroke: "currentColor", "stroke-width": 1 }, inner);
+    const tt = el("text", { x: x + w / 2, y: 223, "text-anchor": "middle", "font-size": 11,
+      "font-family": "JetBrains Mono, monospace", class: t.startsWith("GATE") ? "c-acc" : "c-ink" }, inner);
+    tt.textContent = t;
+    x += w + 6;
+  }
+  const half = (x - 488) / 2;
+  if (!reduce) {
+    let off = 0;
+    (function tick() { off = (off + 0.35) % half; inner.setAttribute("transform", `translate(${-off},0)`); requestAnimationFrame(tick); })();
+  }
+  // loop arrow: tokens feed back
+  p.curve([[840, 222], [854, 250], [700, 268], [500, 262], [478, 240]], { cls: "c-acc", sw: 1.4 });
+  p.text(660, 290, "each new token is one amplitude, fed back as input", { anchor: "middle", size: 14, cls: "c-acc" });
+  // read-back
+  p.arrow(472, 160, 420, 250);
+  p.rect(244, 236, 170, 76);
+  p.text(329, 266, "host reads the state", { anchor: "middle", bold: true, size: 16 });
+  p.text(329, 290, "from DeltaNet memory", { anchor: "middle", size: 15 });
+  p.arrow(238, 274, 190, 274);
+  p.rect(14, 236, 170, 76, { fill: "c-mark", gap: 7 });
+  p.text(99, 266, "tool response;", { anchor: "middle", bold: true, size: 16 });
+  p.text(99, 290, "Qwen answers", { anchor: "middle", size: 15 });
+}
+
+/* ---------------- Figure 2: DeltaNet head as RAM ---------------- */
+function fig2() {
+  const svg = document.getElementById("fig2"), p = pen(svg);
+  const X0 = 150, Y0 = 52, CW = 22, RH = 28, NB = 16;
+  p.text(X0 + 1 * CW, Y0 - 14, "ballast", { size: 13, cls: "c-muted", anchor: "middle" });
+  p.text(X0 + 2 * CW + NB * CW / 2, Y0 - 14, "16 data bits (two's complement)", { size: 14, cls: "c-muted", anchor: "middle" });
+  const cells = [];
+  for (let r = 0; r < 8; r++) {
+    p.text(X0 - 12, Y0 + r * RH + 19, `|${r.toString(2).padStart(3, "0")}⟩`, { anchor: "end", size: 16 });
+    const row = [];
+    for (let c = 0; c < NB + 2; c++) {
+      const rr = el("rect", { x: X0 + c * CW + 1, y: Y0 + r * RH + 2, width: CW - 2, height: RH - 4, rx: 3,
+        class: c < 2 ? "c-muted" : "c-rule", fill: "currentColor", opacity: c < 2 ? 0.35 : 0.9 }, svg);
+      row.push(rr);
+    }
+    cells.push(row);
+  }
+  p.rect(X0 - 3, Y0 - 2, (NB + 2) * CW + 6, 8 * RH + 4, { sw: 1.6 });
+  // formula and explanation
+  const fx = 610;
+  p.text(fx, 70, "delta rule, every token:", { size: 15, cls: "c-muted" });
+  p.text(fx, 98, "S ← S + k (v − Sᵀk)ᵀ", { size: 19, bold: true });
+  p.text(fx, 140, "one-hot key k = e₅", { size: 16, cls: "c-acc" });
+  p.text(fx, 162, "→ row 5 becomes v", { size: 16, cls: "c-acc" });
+  p.text(fx, 200, "one-hot query q = e₅", { size: 16, cls: "c-good" });
+  p.text(fx, 222, "→ returns row 5", { size: 16, cls: "c-good" });
+  const status = p.text(fx, 270, "", { size: 18, bold: true });
+  const keyArrow = p.arrow(40, Y0 + 5 * RH + 14, X0 - 64, Y0 + 5 * RH + 14, { cls: "c-acc", sw: 2 });
+  const keyLbl = p.text(40, Y0 + 5 * RH + 4, "write", { size: 14, cls: "c-acc" });
+  const qx = X0 + (NB + 2) * CW + 12;
+  const qArrow = p.arrow(qx + 40, Y0 + 5 * RH + 14, qx + 2, Y0 + 5 * RH + 14, { cls: "c-good", sw: 2 });
+  const qLbl = p.text(qx + 8, Y0 + 5 * RH - 2, "read", { size: 14, cls: "c-good" });
+  const val = 176, bits = [];
+  for (let b = 0; b < NB; b++) bits.push((val >> b) & 1);
+  function paint(stage, t) {
+    // stage 0: empty row; 1: writing bits up to t; 2: read
+    for (let c = 0; c < NB; c++) {
+      const cell = cells[5][2 + (NB - 1 - c)]; // MSB on the left
+      const b = c; // bit index
+      const on = stage >= 1 && (stage === 2 || b < t) && bits[b];
+      const filled = stage >= 1 && (stage === 2 || b < t);
+      cell.setAttribute("class", on ? (stage === 2 ? "c-good" : "c-acc") : filled ? "c-muted" : "c-rule");
+      cell.setAttribute("opacity", on ? 0.95 : filled ? 0.35 : 0.9);
+    }
+    cells[5][0].setAttribute("opacity", stage >= 1 ? 0.9 : 0.35);
+    cells[5][1].setAttribute("opacity", stage >= 1 ? 0.9 : 0.35);
+    keyArrow.style.opacity = keyLbl.style.opacity = stage === 1 || stage === 0 ? 1 : 0.15;
+    qArrow.style.opacity = qLbl.style.opacity = stage === 2 ? 1 : 0.15;
+    status.textContent = stage === 0 ? "token VAL(176) arrives…" : stage === 1 ? "writing 176 = 0000 0000 1011 0000" : "read back: 176";
+    status.setAttribute("class", (stage === 2 ? "c-good" : "c-acc") + " hand");
+  }
+  if (reduce) { paint(2, NB); return; }
+  let t0 = performance.now();
+  (function loop(now) {
+    const s = ((now - t0) / 1000) % 6.5;
+    if (s < 1.2) paint(0, 0); else if (s < 3.6) paint(1, Math.floor((s - 1.2) / 2.4 * (NB + 1))); else paint(2, NB);
+    requestAnimationFrame(loop);
+  })(t0);
+}
+
+/* ---------------- Figure 3: Grover, gate by gate ---------------- */
+const FRAMES = [{"label":"start |000>","amps":[1,0,0,0,0,0,0,0],"k":0},{"label":"h(q0)","amps":[1,1,0,0,0,0,0,0],"k":1},{"label":"h(q1)","amps":[1,1,1,1,0,0,0,0],"k":2},{"label":"h(q2)","amps":[1,1,1,1,1,1,1,1],"k":3},{"label":"x(q1)","amps":[1,1,1,1,1,1,1,1],"k":3},{"label":"ccz(q0, q1, q2)","amps":[1,1,1,1,1,1,1,-1],"k":3},{"label":"x(q1)","amps":[1,1,1,1,1,-1,1,1],"k":3},{"label":"h(q0)","amps":[2,0,2,0,0,2,2,0],"k":4},{"label":"h(q1)","amps":[4,0,0,0,2,2,-2,2],"k":5},{"label":"h(q2)","amps":[6,2,-2,2,2,-2,2,-2],"k":6},{"label":"x(q0)","amps":[2,6,2,-2,-2,2,-2,2],"k":6},{"label":"x(q1)","amps":[2,-2,2,6,-2,2,-2,2],"k":6},{"label":"x(q2)","amps":[-2,2,-2,2,2,-2,2,6],"k":6},{"label":"ccz(q0, q1, q2)","amps":[-2,2,-2,2,2,-2,2,-6],"k":6},{"label":"x(q0)","amps":[2,-2,2,-2,-2,2,-6,2],"k":6},{"label":"x(q1)","amps":[2,-2,2,-2,-6,2,-2,2],"k":6},{"label":"x(q2)","amps":[-6,2,-2,2,2,-2,2,-2],"k":6},{"label":"h(q0)","amps":[-4,-8,0,-4,0,4,0,4],"k":7},{"label":"h(q1)","amps":[-4,-12,-4,-4,0,8,0,0],"k":8},{"label":"h(q2)","amps":[-4,-4,-4,-4,-4,-20,-4,-4],"k":9},{"label":"x(q1)","amps":[-4,-4,-4,-4,-4,-4,-4,-20],"k":9},{"label":"ccz(q0, q1, q2)","amps":[-4,-4,-4,-4,-4,-4,-4,20],"k":9},{"label":"x(q1)","amps":[-4,-4,-4,-4,-4,20,-4,-4],"k":9},{"label":"h(q0)","amps":[-8,0,-8,0,16,-24,-8,0],"k":10},{"label":"h(q1)","amps":[-16,0,0,0,8,-24,24,-24],"k":11},{"label":"h(q2)","amps":[-8,-24,24,-24,-24,24,-24,24],"k":12},{"label":"x(q0)","amps":[-24,-8,-24,24,24,-24,24,-24],"k":12},{"label":"x(q1)","amps":[-24,24,-24,-8,24,-24,24,-24],"k":12},{"label":"x(q2)","amps":[24,-24,24,-24,-24,24,-24,-8],"k":12},{"label":"ccz(q0, q1, q2)","amps":[24,-24,24,-24,-24,24,-24,8],"k":12},{"label":"x(q0)","amps":[-24,24,-24,24,24,-24,8,-24],"k":12},{"label":"x(q1)","amps":[-24,24,-24,24,8,-24,24,-24],"k":12},{"label":"x(q2)","amps":[8,-24,24,-24,-24,24,-24,24],"k":12},{"label":"h(q0)","amps":[-16,32,0,48,0,-48,0,-48],"k":13},{"label":"h(q1)","amps":[-16,80,-16,-16,0,-96,0,0],"k":14},{"label":"h(q2)","amps":[-16,-16,-16,-16,-16,176,-16,-16],"k":15}];
+function ownRow(j, q) { const p = j >> 1, e = j & 1, lo = p & ((1 << q) - 1); return ((p >> q) << (q + 1)) | (e << q) | lo; }
+function phase(i) { if (i === 0) return "prepare"; if (i <= 3) return "uniform superposition"; return ["oracle", "diffusion"][Math.floor((i - 4) / (i < 17 ? 1 : 1)) % 2]; }
+function stageName(i) {
+  if (i === 0) return "start";
+  if (i <= 3) return "superposition";
+  const j = (i - 4) % 16;
+  const it = i < 20 ? 1 : 2;
+  return (j < 3 ? "oracle" : "diffusion") + `, iteration ${it}`;
+}
+function fig3() {
+  const svg = document.getElementById("fig3"), p = pen(svg);
+  const X0 = 90, W = 700, Y0 = 170, H = 120;
+  p.line(X0 - 10, Y0, X0 + W + 10, Y0, { sw: 1.3, cls: "c-muted", rough: 0.6 });
+  p.line(X0 - 10, Y0 - H, X0 - 10, Y0 + H, { sw: 1, cls: "c-rule", rough: 0.4 });
+  p.text(X0 - 16, Y0 - H + 6, "+1", { anchor: "end", size: 14, cls: "c-muted" });
+  p.text(X0 - 16, Y0 + 5, "0", { anchor: "end", size: 14, cls: "c-muted" });
+  p.text(X0 - 16, Y0 + H + 4, "−1", { anchor: "end", size: 14, cls: "c-muted" });
+  const bw = W / 8;
+  const bars = [], lbls = [], vals = [];
+  for (let i = 0; i < 8; i++) {
+    bars.push(el("rect", { x: X0 + i * bw + 14, y: Y0, width: bw - 28, height: 0, rx: 3, class: i === 5 ? "c-acc" : "c-muted", fill: "currentColor", opacity: 0.85 }, svg));
+    lbls.push(p.text(X0 + i * bw + bw / 2, Y0 + H + 30, `|${i.toString(2).padStart(3, "0")}⟩`, { anchor: "middle", size: 16, cls: i === 5 ? "c-acc" : "c-ink", bold: i === 5 }));
+    vals.push(el("text", { x: X0 + i * bw + bw / 2, y: Y0, "text-anchor": "middle", "font-size": 12, "font-family": "JetBrains Mono, monospace", class: "c-muted" }, svg));
+  }
+  const title = p.text(X0, 28, "", { size: 19, bold: true });
+  const sub = p.text(X0 + W, 28, "", { size: 15, anchor: "end", cls: "c-muted" });
+  const slider = document.getElementById("g-slider"), label = document.getElementById("g-label"), tape = document.getElementById("g-tape");
+  let cur = FRAMES.length - 1, timer = null;
+  function show(i) {
+    cur = i; slider.value = i;
+    const f = FRAMES[i], s = Math.pow(2, f.k / 2);
+    for (let r = 0; r < 8; r++) {
+      const v = f.amps[r] / s, h = Math.abs(v) * H;
+      bars[r].setAttribute("y", v >= 0 ? Y0 - h : Y0);
+      bars[r].setAttribute("height", Math.max(h, 0.5));
+      vals[r].textContent = f.amps[r];
+      vals[r].setAttribute("y", v >= 0 ? Y0 - h - 6 : Y0 + h + 14);
+    }
+    title.textContent = i === 0 ? "start: |000⟩" : `gate ${i} of 35: ${f.label}`;
+    sub.textContent = `${stageName(i)} · scale 1/√2^${f.k} · P(101) = ${(f.amps[5] * f.amps[5] / Math.pow(2, f.k)).toFixed(4)}`;
+    label.textContent = `${i}/35`;
+    tape.innerHTML = "";
+    if (i > 0) {
+      const m = f.label.match(/q(\d)\)$/), q = m ? +m[1] : 0;
+      const g = document.createElement("span"); g.className = "gate"; g.textContent = `GATE ${i - 1}`; tape.appendChild(g);
+      for (let j = 0; j < 8; j++) {
+        const v = f.amps[ownRow(j, q)];
+        const c = document.createElement("span");
+        c.textContent = "0x" + ((v + 65536) % 65536).toString(16).padStart(4, "0").toUpperCase();
+        c.title = `row |${ownRow(j, q).toString(2).padStart(3, "0")}⟩ = ${v}`;
+        tape.appendChild(c);
+      }
+    } else {
+      const c = document.createElement("span"); c.textContent = "host writes the initial state: AMP 0 → 1"; tape.appendChild(c);
+    }
+  }
+  function stop() { clearInterval(timer); timer = null; document.getElementById("g-play").textContent = "Play"; }
+  document.getElementById("g-prev").onclick = () => { stop(); show(Math.max(0, cur - 1)); };
+  document.getElementById("g-next").onclick = () => { stop(); show(Math.min(FRAMES.length - 1, cur + 1)); };
+  slider.oninput = () => { stop(); show(+slider.value); };
+  document.getElementById("g-play").onclick = () => {
+    if (timer) return stop();
+    if (cur === FRAMES.length - 1) show(0);
+    document.getElementById("g-play").textContent = "Pause";
+    timer = setInterval(() => { if (cur >= FRAMES.length - 1) return stop(); show(cur + 1); }, 650);
+  };
+  show(FRAMES.length - 1);
+}
+
+/* ---------------- Figure 4: two buffers, one Hadamard ---------------- */
+function fig4() {
+  const svg = document.getElementById("fig4"), p = pen(svg);
+  const LX = 170, RX = 560, Y0 = 46, RH = 27, CW = 120;
+  p.text(LX + CW / 2, 30, "buffer 0: read", { anchor: "middle", bold: true, size: 17 });
+  p.text(RX + CW / 2, 30, "buffer 1: write", { anchor: "middle", bold: true, size: 17, cls: "c-acc" });
+  const names = ["a₀", "a₁", "a₂", "a₃", "a₄", "a₅", "a₆", "a₇"];
+  const pairs = [[0, 2], [1, 3], [4, 6], [5, 7]];
+  const order = {};
+  pairs.forEach(([i0, i1], k) => { order[i0] = 2 * k + 1; order[i1] = 2 * k + 2; });
+  for (let r = 0; r < 8; r++) {
+    p.text(LX - 14, Y0 + r * RH + 19, `|${r.toString(2).padStart(3, "0")}⟩`, { anchor: "end", size: 15 });
+    p.rect(LX, Y0 + r * RH + 2, CW, RH - 4, { sw: 1.2, rough: 0.7 });
+    p.text(LX + CW / 2, Y0 + r * RH + 19, names[r], { anchor: "middle", size: 16 });
+    p.rect(RX, Y0 + r * RH + 2, CW, RH - 4, { sw: 1.2, rough: 0.7, cls: "c-acc", fill: "c-mark", gap: 6 });
+    const mate = r ^ 2, lo = Math.min(r, mate), hi = Math.max(r, mate);
+    const expr = r === lo ? `${names[lo]} + ${names[hi]}` : `${names[lo]} − ${names[hi]}`;
+    p.text(RX + CW / 2, Y0 + r * RH + 19, expr, { anchor: "middle", size: 15, cls: "c-acc" });
+    p.circle(RX + CW + 26, Y0 + r * RH + 13, 22, { cls: "c-muted", sw: 1.1 });
+    p.text(RX + CW + 26, Y0 + r * RH + 18, String(order[r]), { anchor: "middle", size: 13, cls: "c-muted", bold: true });
+  }
+  // butterfly lines for the first pair, in accent, others faint
+  pairs.forEach(([i0, i1], k) => {
+    const cls = k === 0 ? "c-acc" : "c-rule";
+    for (const s of [i0, i1]) for (const d of [i0, i1])
+      p.line(LX + CW + 4, Y0 + s * RH + 13, RX - 6, Y0 + d * RH + 13, { cls, sw: k === 0 ? 1.6 : 1.1, rough: 0.6 });
+  });
+  p.text(LX + CW + (RX - LX - CW) / 2, Y0 + 8 * RH + 26, "H on q1: pairs differ in bit 1", { anchor: "middle", size: 16 });
+  p.text(LX + CW + (RX - LX - CW) / 2, Y0 + 8 * RH + 48, "the next gate reads buffer 1 and writes buffer 0", { anchor: "middle", size: 14, cls: "c-muted" });
+}
+
+/* ---------------- Figure 5: multiplying by omega ---------------- */
+function fig5() {
+  const svg = document.getElementById("fig5"), p = pen(svg);
+  // unit circle with 8th roots
+  const cx = 105, cy = 110, R = 70;
+  p.circle(cx, cy, 2 * R, { cls: "c-muted", sw: 1.2 });
+  for (let k = 0; k < 8; k++) {
+    const a = -k * Math.PI / 4;
+    p.circle(cx + R * Math.cos(a), cy + R * Math.sin(a), k % 2 ? 9 : 11, { fill: true, cls: k === 1 ? "c-acc" : "c-ink", sw: 1 });
+  }
+  p.text(cx + R * Math.cos(-Math.PI / 4) + 10, cy + R * Math.sin(-Math.PI / 4) - 6, "ω", { size: 19, cls: "c-acc", bold: true });
+  p.text(cx + R + 12, cy + 5, "1", { size: 16 });
+  p.text(cx - R - 26, cy + 5, "−1", { size: 16 });
+  p.text(cx, cy + R + 32, "ω = e^(iπ/4), ω⁴ = −1", { anchor: "middle", size: 14, cls: "c-muted" });
+  // components before and after
+  const bx = 290, by = 46, cw = 86, ch = 40;
+  const before = ["a₀", "a₁", "a₂", "a₃"], after = ["−a₃", "a₀", "a₁", "a₂"];
+  p.text(bx - 14, by + 26, "x =", { anchor: "end", size: 17 });
+  p.text(bx - 14, by + 126, "ω·x =", { anchor: "end", size: 17, cls: "c-acc" });
+  for (let i = 0; i < 4; i++) {
+    p.rect(bx + i * (cw + 14), by, cw, ch, { sw: 1.4 });
+    p.text(bx + i * (cw + 14) + cw / 2, by + 26, before[i], { anchor: "middle", size: 18 });
+    p.rect(bx + i * (cw + 14), by + 100, cw, ch, { sw: 1.4, cls: "c-acc", fill: i === 0 ? "c-mark" : undefined, gap: 6 });
+    p.text(bx + i * (cw + 14) + cw / 2, by + 126, after[i], { anchor: "middle", size: 18, cls: i === 0 ? "c-bad" : "c-acc", bold: i === 0 });
+    p.text(bx + i * (cw + 14) + cw / 2, by - 8, ["1", "ω", "ω²", "ω³"][i], { anchor: "middle", size: 13, cls: "c-muted" });
+  }
+  for (let i = 0; i < 3; i++) p.arrow(bx + i * (cw + 14) + cw / 2, by + ch + 4, bx + (i + 1) * (cw + 14) + cw / 2 - 6, by + 96, { cls: "c-acc", sw: 1.4 });
+  p.curve([[bx + 3 * (cw + 14) + cw - 6, by + ch + 4], [bx + 3 * (cw + 14) + cw + 30, by + 70], [bx + 200, by + 88], [bx + cw / 2 + 4, by + 98]], { cls: "c-bad", sw: 1.4 });
+  p.text(bx + 4 * (cw + 14) - 4, by + 84, "wraps: ω⁴ = −1", { anchor: "end", size: 14, cls: "c-bad" });
+  p.text(bx, by + 176, "No multiplier: pick a source component, maybe complement it, add.", { size: 15, cls: "c-muted" });
+}
+
+/* ---------------- Figure 6: sampling ---------------- */
+function fig6() {
+  const svg = document.getElementById("fig6"), p = pen(svg);
+  // left: tied logits
+  const LX = 40, LY = 270, BW = 22;
+  p.text(LX, 34, "logits at a random step (3 open bits)", { size: 15, cls: "c-muted" });
+  p.line(LX - 6, LY, LX + 330, LY, { cls: "c-muted", sw: 1.2, rough: 0.5 });
+  for (let i = 0; i < 8; i++) p.rect(LX + i * (BW + 8), LY - 190, BW, 190, { cls: "c-acc", fill: "c-acc", fs: "solid", sw: 1, rough: 0.5 });
+  for (let i = 0; i < 3; i++) p.rect(LX + 250 + i * 26, LY - 22 + i * 4, 16, 22 - i * 4, { cls: "c-muted", fill: "c-muted", fs: "solid", sw: 1, rough: 0.5 });
+  p.line(LX - 6, LY - 190, LX + 238, LY - 190, { cls: "c-good", sw: 1.4, rough: 0.3 });
+  p.text(LX + 120, LY - 200, "exactly equal: each gets ⅛", { anchor: "middle", size: 15, cls: "c-good", bold: true });
+  p.text(LX + 120, LY + 22, "VAL(0) … VAL(7)", { anchor: "middle", size: 14 });
+  p.text(LX + 290, LY + 22, "everything else", { anchor: "middle", size: 14, cls: "c-muted" });
+  // right: rejection square
+  const SX = 470, SY = 50, S = 220, A = 0.62;
+  p.rect(SX, SY, S, S, { sw: 1.6 });
+  p.rect(SX, SY + S - A * S, A * S, A * S, { cls: "c-acc", fill: "c-mark", gap: 7, sw: 1.6 });
+  p.text(SX + S / 2, SY + S + 24, "u₁ ∈ [0, 2^m)", { anchor: "middle", size: 14 });
+  p.text(SX - 10, SY + S / 2, "u₂", { anchor: "end", size: 14 });
+  p.text(SX + A * S / 2, SY + S - A * S - 8, "|a|", { anchor: "middle", size: 16, cls: "c-acc", bold: true });
+  const stat = p.text(SX + S + 22, SY + 40, "", { size: 16 });
+  const stat2 = p.text(SX + S + 22, SY + 66, "", { size: 15, cls: "c-muted" });
+  p.text(SX + S + 22, SY + 110, "expected: (|a| / 2^m)²", { size: 15 });
+  p.text(SX + S + 22, SY + 134, `= ${(A * A).toFixed(3)}`, { size: 15 });
+  const dots = el("g", {}, svg);
+  let tried = 0, acc = 0, seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  function drop() {
+    const u1 = rnd(), u2 = rnd(), ok = u1 < A && u2 < A;
+    tried++; acc += ok;
+    el("circle", { cx: SX + u1 * S, cy: SY + S - u2 * S, r: 3.2, class: ok ? "c-good" : "c-bad", fill: "currentColor", opacity: 0.85 }, dots);
+    if (dots.childNodes.length > 260) dots.removeChild(dots.firstChild);
+    stat.textContent = `accepted ${acc} of ${tried}`;
+    stat2.textContent = `rate ${(acc / tried).toFixed(3)}`;
+  }
+  if (reduce) { for (let i = 0; i < 260; i++) drop(); return; }
+  for (let i = 0; i < 40; i++) drop();
+  setInterval(drop, 120);
+}
+
+function draw() {
+  for (const id of ["fig1", "fig2", "fig3", "fig4", "fig5", "fig6"]) document.getElementById(id).replaceChildren();
+  fig1(); fig2(); fig3(); fig4(); fig5(); fig6();
+}
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw); else draw();
+})();
+</script>
