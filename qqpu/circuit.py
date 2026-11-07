@@ -30,6 +30,9 @@ from qqpu.machine import (
     CONF0,
     END,
     GATE0,
+    IDX0,
+    SHOT0,
+    WBITS,
     GBITS,
     KINDS,
     NCOMP,
@@ -80,7 +83,13 @@ class QPU(Circ):
               for b in range(NQ)]
         cb = [feat(f"cb{b}", lambda t, b=b: int(kind(t) == "conf" and (t - CONF0) >> b & 1))
               for b in range(4)]
-        start = one - is_val  # every other token starts a record (text included)
+        is_idx = feat("is_idx", lambda t: int(kind(t) == "idx"))
+        is_shot = feat("is_shot", lambda t: int(kind(t) == "shot"))
+        ib = [feat(f"ib{b}", lambda t, b=b: int(kind(t) == "idx" and (t - IDX0) >> b & 1))
+              for b in range(NQ)]
+        # every other token starts a record (text included); a measurement's IDX / SHOT
+        # tokens stay inside the MEAS record
+        start = one - is_val - is_idx - is_shot
 
         # --- record, mode, counter ---------------------------------------------------------
         (rec,) = thead(c, "rec", {0: start}, {0: one},
@@ -108,7 +117,7 @@ class QPU(Circ):
         rom_keys = {g: lag(feat(f"prog{g}", lambda t, g=g: int(t == PROG(g))), 1)
                     for g in range(nprog)}
         rom_q = {g: c.and_([r_gate, g_oh[g]], f"romq{g}") for g in range(nprog)}
-        wbits = OPBITS + QBITS + NQ
+        wbits = WBITS
         (word,) = thead(c, "rom", rom_keys, rom_q,
                         [{"data": {2 + b: lag(pay[b], 0) for b in range(wbits)}, "ref": one}])
         op_oh = c.onehot_of_bits(word[:OPBITS], "op", len(OPS))
@@ -128,7 +137,27 @@ class QPU(Circ):
                        if not (cx and n > NQC)
                        for t in c.t_and([nq_oh[n], lit, jt[n_vals(n, cx) - 1],
                                          one - jt[n_vals(n, cx)]])], "done")
-        live = c.and_([r_gate, one - op["halt"], due], "live")
+        live = c.and_([r_gate, one - op["halt"] - op["meas"], due], "live")
+
+        # --- measurement: rejection sampling with the sampler's own coins ------------------
+        r_meas = c.and_([r_gate, op["meas"]], "r_meas")
+        m_oh = c.onehot_of_bits(word[OPBITS:OPBITS + 4], "m")  # trial range 2^m
+        shots_oh = c.onehot_of_bits(word[OPBITS + 4:OPBITS + 10], "shots")  # shots - 1
+        (hist,) = thead(c, "hist", {0: one}, {0: one},
+                        [{"data": {2: lag(is_idx, 1), 3: lag(is_idx, 2),
+                                   **{4 + b: lag(ib[b], 2) for b in range(NQ)},
+                                   **{4 + NQ + b: lag(pay[b], 1) for b in range(W)}},
+                          "ref": one}])
+        prev_idx, prev2_idx = hist[0], hist[1]
+        h_i, u1 = hist[2:2 + NQ], hist[2 + NQ:2 + NQ + W]
+        st = thermo(c, counter(c, "shots", start, is_shot), start, 65, "s")
+        shots_done = c.node([t for n in range(64)
+                             for t in c.t_and([shots_oh[n], st[n], one - st[n + 1]])],
+                            "shots_done")
+        at_u1 = c.and_([r_meas, is_val, prev_idx], "at_u1")
+        at_u2 = c.and_([r_meas, is_val, prev2_idx], "at_u2")
+        hi_oh = c.onehot_of_bits(h_i, "h_i")
+        samp_q = [c.and_([at_u2, hi_oh[r]], f"sampq{r}") for r in range(R)]
 
         # --- the pair walk -----------------------------------------------------------------
         def slot_terms(r_of_q, lits):
@@ -166,6 +195,8 @@ class QPU(Circ):
         kterms: dict[str, list] = {k: [] for k in KINDS}
         kterms["own0"] += c.t_and([live, one - active])
         for o in OPS[1:]:
+            if o == "meas":
+                continue
             for ev in (0, 1):
                 k = kind_of(Gate(o), ev, True)
                 kterms[k] += c.t_and([live, active, op[o], e if ev else one - e])
@@ -200,7 +231,7 @@ class QPU(Circ):
               1: c.and_([r_gate, one - rd1], "wb1")}  # ... and writes the other (AMP: 0)
         keys = {r: lag(wr[r], 1) for r in range(R)}
         data = {2 + b: lag(pay[b], 0) for b in range(W)}
-        q_own = {b: {r: c.and_([own[r], rd1 if b else one - rd1], f"qown{b}.{r}")
+        q_own = {b: {r: c.and_([own[r] + samp_q[r], rd1 if b else one - rd1], f"qown{b}.{r}")
                      for r in range(R)} for b in (0, 1)}
         q_par = {b: {r: c.and_([par[r], rd1 if b else one - rd1], f"qpar{b}.{r}")
                      for r in range(R)} for b in (0, 1)}
@@ -237,8 +268,43 @@ class QPU(Circ):
         g_, p_, d_ = stage1_digits(c, sums, "val", 32)
         value, _ = adder_stage2(c, g_, p_, d_, nib, "val")
 
+        # --- acceptance: u1 < |a_i| and u2 < |a_i| ---------------------------------------
+        a0 = own_bits[0]
+        neg = a0[W - 1]
+        xa = [c.node(c.t_and([one - neg, a0[b]]) + c.t_and([neg, one - a0[b]]), f"abs.x{b}")
+              for b in range(W)]
+        g_, p_, d_ = stage1_digits(c, [[(from_bits(xa[4 * k:4 * k + 4]) + (neg if k == 0 else 0),
+                                         [])] for k in range(nib)], "abs", 16)
+        mag, _ = adder_stage2(c, g_, p_, d_, nib, "abs")
+
+        def less(u, name):  # u < mag: the carry out of mag + ~u
+            g2, p2, d2 = stage1_digits(c, [[(from_bits(mag[4 * k:4 * k + 4])
+                                             + 15 - from_bits(u[4 * k:4 * k + 4]), [])]
+                                           for k in range(nib)], name, 30)
+            return adder_stage2(c, g2, p2, d2, nib, name)[1]
+
+        accept = c.and_([less(u1, "lt1"), less(pay, "lt2")], "accept")
+        at_start = c.and_([r_meas, is_gate], "at_start")
+        at_shot = c.and_([r_meas, is_shot], "at_shot")
+        pred_idx = c.node(c.t_and([at_start]) + c.t_and([at_shot, one - shots_done])
+                          + c.t_and([at_u2, one - accept]), "pred.idx")
+        pred_rand = c.node(c.t_and([r_meas, is_idx]) + c.t_and([at_u1]), "pred.rand")
+        pred_shot = c.and_([at_u2, accept], "pred.shot")
+        pred_mend = c.and_([at_shot, shots_done], "pred.mend")
+        # random bits: a tie in the output code (the sampler's coin flips)
+        def tie_terms(i):
+            terms = []
+            if i < NQ:
+                terms += c.t_and([pred_idx, sum((nq_oh[n] for n in range(i + 1, NQ + 1)),
+                                                Expr())])
+            if i < W:
+                terms += c.t_and([pred_rand, sum((m_oh[m] for m in range(i + 1, 16)), Expr())])
+            return terms
+
+        self.ties = [c.node(tie_terms(i), f"tie{i}") for i in range(NCODE)]
+
         # --- the next token ----------------------------------------------------------------
-        out_gate = c.and_([r_gate, one - op["halt"], done], "out.gate")
+        out_gate = c.and_([r_gate, one - op["halt"] - op["meas"], done], "out.gate")
         out_end = c.and_([r_gate, op["halt"]], "out.end")
         inc = [sum((g_oh[g] for g in range(nprog - 1) if (g + 1) >> b & 1), Expr())
                for b in range(GBITS)]
@@ -252,11 +318,18 @@ class QPU(Circ):
             if GATE0 >> i & 1:
                 terms += c.t_and([out_gate])
             if END >> i & 1:
-                terms += c.t_and([out_end])
+                terms += c.t_and([out_end]) + c.t_and([pred_mend])
+            if IDX0 >> i & 1:
+                terms += c.t_and([pred_idx])
+            if SHOT0 >> i & 1:
+                terms += c.t_and([pred_shot])
+            if i < NQ:
+                terms += c.t_and([pred_shot, h_i[i]])
             nxt.append(c.node(terms, f"next.b{i}"))
         self.live, self.out_gate, self.out_end = live, out_gate, out_end
         self.next_bits = nxt
-        self.output_code(live + out_gate + out_end)
+        self.output_code(live + out_gate + out_end + pred_idx + pred_rand + pred_shot
+                         + pred_mend)
 
     def output_code(self, own: Expr) -> None:
         """As in qgpu / Qwenputer: chip tokens carry CODE_AMP * (2 bit - 1) of their id; the exit
@@ -277,6 +350,8 @@ class QPU(Circ):
         for i, e in enumerate(self.code):
             terms = (c.t_and([owner, self.next_bits[i]], 2 * KAPPA)
                      if self.next_bits[i].terms else []) + c.t_and([owner], -KAPPA)
+            if self.ties[i].terms:  # a random bit: 0, so both values tie
+                terms += c.t_and([owner, self.ties[i]], KAPPA)
             c.ffn(terms, f"exit.code{i}", into=e, min_level=top)
         c.ffn([(1, mu, one)], "exit.tau", into=self.tau, min_level=top)
         self.owner = owner
@@ -288,11 +363,18 @@ def dim(e: Expr) -> int:
     return d
 
 
-def predicted(c: QPU, m, t: int) -> int | None:
-    """The token the circuit predicts after position t (None where it does not own it)."""
+def predicted(c: QPU, m, t: int) -> tuple[int, int] | None:
+    """(token, random-bit mask) the circuit predicts after position t (None where it does not
+    own it): every token that agrees with `token` outside the mask ties for the top logit."""
     if m[t, dim(c.owner)] != 1:
         return None
-    return sum(int(m[t, dim(b)]) << i for i, b in enumerate(c.next_bits) if b.terms)
+    tok = sum(int(m[t, dim(b)]) << i for i, b in enumerate(c.next_bits) if b.terms)
+    mask = sum(int(m[t, dim(b)]) << i for i, b in enumerate(c.ties) if b.terms)
+    return tok, mask
+
+
+def matches(pred, tok: int) -> bool:
+    return pred is not None and (pred[0] ^ tok) & ~pred[1] == 0
 
 
 def amplitudes(c: QPU, carry: dict, nq: int, cplx: bool, buffer: int) -> list[tuple]:

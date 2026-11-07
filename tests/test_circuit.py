@@ -8,7 +8,7 @@ import pytest
 from chipformer.q35.ir import evaluate
 
 from qqpu import circuits
-from qqpu.circuit import QPU, amplitudes, predicted
+from qqpu.circuit import QPU, amplitudes, matches, predicted
 from qqpu.machine import NQC, W, trace
 
 
@@ -17,17 +17,21 @@ def qpu() -> QPU:
     return QPU()
 
 
-def check(tokens, owned):
+def check(tokens, owned, ties=None):
     carry = {}
     m = evaluate(qpu(), tokens[:-1], carry=carry)
-    bad = [t for t in owned if predicted(qpu(), m, t) != tokens[t + 1]]
-    assert not bad, f"{len(bad)} wrong, first at {bad[0]}"
+    bad = [t for t in owned if not matches(predicted(qpu(), m, t), tokens[t + 1])]
+    assert not bad, f"{len(bad)} wrong, first at {bad[0]}: {predicted(qpu(), m, bad[0])}"
+    # random bits exactly where the reference drew them, and nowhere else
+    ties = ties or {}
+    wrong = [t for t in owned if predicted(qpu(), m, t)[1] != ties.get(t, 0)]
+    assert not wrong, f"tie masks differ at {wrong[:3]}"
     return carry
 
 
-def run(gates, nq, init=None, cplx=None):
-    tr = trace(gates, nq, init, cplx)
-    carry = check(tr.tokens, tr.owned)
+def run(gates, nq, init=None, cplx=None, shots=0, seed=0):
+    tr = trace(gates, nq, init, cplx, shots, seed)
+    carry = check(tr.tokens, tr.owned, tr.ties)
     assert amplitudes(qpu(), carry, nq, tr.cplx, tr.final_buffer) == tr.amps
     return tr
 
@@ -72,3 +76,18 @@ def test_back_to_back_runs():
     owned = t1.owned + [len(t1.tokens) + t for t in t2.owned]
     carry = check(toks, owned)
     assert amplitudes(qpu(), carry, 2, False, t2.final_buffer) == t2.amps
+
+
+@pytest.mark.parametrize("name,shots", [("bell", 12), ("ghz3", 8), ("grover3_m5", 6),
+                                        ("dj3_balanced", 6), ("teleport", 5)])
+def test_measurement_shots(name, shots):
+    """MEAS: random IDX / VAL tokens are ties over exactly the reference's random bits; the
+    accept / reject decision and the SHOT outcomes are exact."""
+    nq, gates = circuits.library()[name]
+    tr = run(gates, nq, shots=shots, seed=7)
+    assert len(tr.outcomes) == shots
+
+
+def test_shots_after_no_gates_and_odd_k():
+    run([], 2, shots=3, seed=1)  # k = 0: m = 0, the random VALs are all 0
+    run([circuits.H(0), circuits.H(1), circuits.H(2)], 3, shots=4, seed=2)  # k = 3: m = 2

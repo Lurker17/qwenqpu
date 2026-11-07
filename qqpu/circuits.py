@@ -154,7 +154,7 @@ def random_circuit(seed: int, nq: int = NQ, n_gates: int = 20, max_h: int = 24,
                    cplx: bool = False):
     rng = random.Random(seed)
     g, nh = [], 0
-    ops = [o for o in OPS[1:] if cplx or o not in COMPLEX_OPS]
+    ops = [o for o in OPS[1:] if o != "meas" and (cplx or o not in COMPLEX_OPS)]
     while len(g) < n_gates:
         op = rng.choice(ops)
         if op == "h" and nh >= max_h:

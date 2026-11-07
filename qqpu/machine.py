@@ -39,7 +39,7 @@ W = 16  # bits per component
 VAL_MAX = 1 << W
 GBITS = 6  # up to 64 gates per program (HALT included)
 
-OPS = ("halt", "h", "x", "z", "y", "s", "sdg", "t", "tdg")
+OPS = ("halt", "h", "x", "z", "y", "s", "sdg", "t", "tdg", "meas")
 COMPLEX_OPS = {"y", "s", "sdg", "t", "tdg"}
 PHASE = {"z": 4, "s": 2, "sdg": 6, "t": 1, "tdg": 7}  # i1' = w^m i1
 OPBITS = 4
@@ -49,7 +49,9 @@ GATE0 = VAL_MAX
 PROG0 = GATE0 + (1 << GBITS)
 AMP0 = PROG0 + (1 << GBITS)
 CONF0 = AMP0 + 128
-END = CONF0 + 16
+IDX0 = CONF0 + 64  # (aligned: random low bits) IDX(i): a measurement trial's candidate basis state (random)
+SHOT0 = IDX0 + (1 << NQ)  # (aligned) SHOT(i): a measurement outcome
+END = SHOT0 + (1 << NQ)
 TEXT = END + 1  # every Qwen text token reaches the circuit as this one token (merged model)
 CHIP_VOCAB = TEXT
 
@@ -74,12 +76,21 @@ def CONF(nq: int, cplx: bool = False) -> int:
     return CONF0 + nq + 8 * int(cplx)
 
 
+def IDX(i: int) -> int:
+    return IDX0 + i
+
+
+def SHOT(i: int) -> int:
+    return SHOT0 + i
+
+
 def kind(t: int) -> str:
     if t == TEXT:
         return "text"
     if t == END:
         return "end"
-    for name, lo in (("conf", CONF0), ("amp", AMP0), ("prog", PROG0), ("gate", GATE0)):
+    for name, lo in (("shot", SHOT0), ("idx", IDX0), ("conf", CONF0), ("amp", AMP0),
+                     ("prog", PROG0), ("gate", GATE0)):
         if t >= lo:
             return name
     return "val"
@@ -98,6 +109,10 @@ def token_name(t: int) -> str:
     if k == "conf":
         x = t - CONF0
         return f"<|q_conf {x & 7}{' c' if x >> 3 else ''}|>"
+    if k == "idx":
+        return f"<|q_try {t - IDX0}|>"
+    if k == "shot":
+        return f"<|q_shot {t - SHOT0}|>"
     if k == "end":
         return "<|q_end|>"
     raise ValueError(t)
@@ -113,7 +128,7 @@ class Gate:
     ctrl: tuple[int, ...] = ()
 
     def __post_init__(self):
-        assert self.op in OPS, self.op
+        assert self.op in OPS and self.op != "meas", self.op
         assert 0 <= self.q < NQ and all(0 <= c < NQ for c in self.ctrl)
         assert self.q not in self.ctrl, "a qubit cannot control itself"
         assert len(set(self.ctrl)) == len(self.ctrl)
@@ -198,6 +213,23 @@ def flatten(gates) -> list[Gate]:
     for g in gates:
         out += flatten(g) if isinstance(g, list) else [g]
     return out
+
+
+@dataclass(frozen=True)
+class Meas:
+    """Sample `shots` measurements of every qubit from the final state (real mode). m sets the
+    trial range 2^m for the acceptance tests (m = ceil(k / 2), k = number of H gates)."""
+    shots: int
+    m: int
+
+    def __post_init__(self):
+        assert 1 <= self.shots <= 64 and 0 <= self.m <= 15
+
+    def encode(self) -> int:
+        return OPS.index("meas") | self.m << OPBITS | (self.shots - 1) << (OPBITS + 4)
+
+
+WBITS = OPBITS + 4 + 6  # ROM word bits (a MEAS word is the widest)
 
 
 def is_complex(gates) -> bool:
@@ -325,7 +357,7 @@ def ncomp(cplx: bool) -> int:
 
 
 def host_tokens(gates: list[Gate], nq: int, init: list | None = None,
-                cplx: bool | None = None) -> list[int]:
+                cplx: bool | None = None, shots: int = 0) -> list[int]:
     """What the host feeds: register size and mode, program ROM, initial state, first GATE."""
     gates = flatten(gates)
     cplx = is_complex(gates) if cplx is None else cplx
@@ -335,7 +367,11 @@ def host_tokens(gates: list[Gate], nq: int, init: list | None = None,
     assert len(gates) + 1 <= 1 << GBITS, "program too long"
     init = norm_init(init, nq)
     toks = [CONF(nq, cplx)]
-    for i, g in enumerate([*gates, Gate("halt")]):
+    last = Gate("halt")
+    if shots:
+        assert not cplx, "measurement shots are supported in real mode"
+        last = Meas(shots, (sum(g.op == "h" for g in gates) + 1) // 2)
+    for i, g in enumerate([*gates, last]):
         toks += [PROG(i), g.encode()]
     for i, a in enumerate(init):
         toks += [AMP(i)] + [x & VAL_MAX - 1 for x in a[:ncomp(cplx)]]
@@ -349,13 +385,22 @@ def norm_init(init, nq):
             for a in init]
 
 
-def trace(gates, nq: int, init: list | None = None, cplx: bool | None = None) -> Trace:
+def trace(gates, nq: int, init: list | None = None, cplx: bool | None = None,
+          shots: int = 0, seed: int = 0) -> Trace:
+    """The run's tokens. With shots, the program ends with MEAS: after the last gate the model
+    samples outcomes by rejection: a trial is IDX(i) VAL(u1) VAL(u2) with i uniform over the
+    basis and u1, u2 uniform over [0, 2^m) (all three random: tied logits); it is accepted,
+    and SHOT(i) written, iff u1 < |a_i| and u2 < |a_i|. P(accept i) is proportional to a_i^2:
+    exactly the Born rule. `seed` drives the reference's random choices."""
+    import random
+
     gates = flatten(gates)
     cplx = is_complex(gates) if cplx is None else cplx
-    toks = host_tokens(gates, nq, init, cplx)
+    toks = host_tokens(gates, nq, init, cplx, shots)
     amps = norm_init(init, nq)
     nc = ncomp(cplx)
     owned = []
+    ties: dict[int, int] = {}  # position -> mask of the predicted token's random bits
     k = 0
     for gi, g in enumerate(gates):
         new = list(amps)
@@ -372,6 +417,29 @@ def trace(gates, nq: int, init: list | None = None, cplx: bool | None = None) ->
         k += g.op == "h"
         owned.append(len(toks) - 1)
         toks.append(GATE(gi + 1))
-    owned.append(len(toks) - 1)  # the HALT gate's token: the model writes END
+    outcomes = []
+    if shots:
+        rng = random.Random(seed)
+        m = (k + 1) // 2
+
+        def emit(tok, mask=0):
+            owned.append(len(toks) - 1)
+            if mask:
+                ties[len(toks) - 1] = mask
+            toks.append(tok)
+
+        while len(outcomes) < shots:
+            i = rng.randrange(1 << nq)
+            emit(IDX(i), (1 << nq) - 1)
+            u1, u2 = rng.randrange(1 << m), rng.randrange(1 << m)
+            emit(u1, (1 << m) - 1)
+            emit(u2, (1 << m) - 1)
+            mag = abs(amps[i][0])
+            if u1 < mag and u2 < mag:
+                emit(SHOT(i))
+                outcomes.append(i)
+    owned.append(len(toks) - 1)  # HALT's GATE token, or the last SHOT: the model writes END
     toks.append(END)
-    return Trace(toks, owned, amps, k, nq, cplx, gates)
+    tr = Trace(toks, owned, amps, k, nq, cplx, gates)
+    tr.ties, tr.outcomes = ties, outcomes
+    return tr

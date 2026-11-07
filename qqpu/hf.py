@@ -50,6 +50,18 @@ class Device:
         return [tuple(comps[k][r] for k in range(4)) for r in range(1 << nq)]
 
 
+def pick(logits, gen: torch.Generator | None = None) -> int:
+    """Greedy decoding with uniform tie-breaking among the top logits: the zero-temperature
+    limit of sampling. Where the circuit leaves random bits in its output code, the tokens that
+    differ only in those bits have exactly equal logits, so this draws them uniformly."""
+    lg = logits.float()
+    if gen is None:
+        return int(lg.argmax())
+    top = torch.nonzero(lg == lg.max()).flatten()
+    pick.n_top = len(top)
+    return int(top[torch.randint(len(top), (1,), generator=gen, device=top.device)])
+
+
 class Runner:
     def __init__(self, model, c: QPU, offset: int = 0, first_layer: int = 0):
         """offset: the model id of chip token 0 (0 for the tiny model)."""
@@ -60,7 +72,7 @@ class Runner:
 
     @torch.no_grad()
     def run(self, host: list[int], nq: int, cplx: bool, buffer: int, max_new: int = 40000,
-            cache=None, check: list[int] | None = None) -> Run:
+            cache=None, check: list[int] | None = None, gen: torch.Generator | None = None) -> Run:
         """host: chip tokens to prefill; decode greedily (full vocabulary) until END. With
         `check` (the reference continuation), stop at the first mismatch."""
         m, off = self.model, self.offset
@@ -70,8 +82,11 @@ class Runner:
         cache = out.past_key_values
         toks = []
         logits = out.logits[0, -1]
+        self.ties = []
         for i in range(max_new):
-            t = int(logits.float().argmax()) - off
+            t = pick(logits, gen) - off
+            if gen is not None:
+                self.ties.append(pick.n_top)
             toks.append(t)
             if check is not None and (i >= len(check) or check[i] != t):
                 break
