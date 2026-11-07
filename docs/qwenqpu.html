@@ -165,7 +165,7 @@ ol.principles { padding-left: 1.3rem; } ol.principles li { margin-bottom: 0.7rem
 
 <figure>
   <div class="fig"><svg id="fig6" viewBox="0 0 860 330" role="img" aria-label="Left: at a random-number step, several tokens tie for the highest logit. Right: random points in a square; points inside the smaller square of side |a| are accepted, with probability (|a|/2^m)^2."></svg></div>
-  <figcaption><b>Figure 6.</b> Left: at a random step the top logits tie exactly, so the sampler acts as a fair die over them; every other token sits far below. Right: one trial is a random point (<i>u</i><sub>1</sub>, <i>u</i><sub>2</sub>), accepted when it lands in the |<i>a</i>|&times;|<i>a</i>| corner, so acceptance follows area, which is |<i>a</i>|<sup>2</sup>. On the merged Qwen3.5-4B, 32 Bell shots came out 14 &times; <span class="mono">00</span> and 18 &times; <span class="mono">11</span>. On the circuit-only checkpoint, 62 of 64 Grover shots landed on <span class="mono">101</span> (Born rule: 94.5%).</figcaption>
+  <figcaption><b>Figure 6.</b> Left: at a random step the top logits tie exactly, so the sampler acts as a fair die over them; every other token sits far below. Right: one trial is a random point (<i>u</i><sub>1</sub>, <i>u</i><sub>2</sub>), accepted when it lands in the |<i>a</i>|&times;|<i>a</i>| corner, so acceptance follows area, which is |<i>a</i>|<sup>2</sup>. On the merged Qwen3.5-4B, 32 Grover shots all landed on <span class="mono">101</span> (Born rule: 94.5%), and 32 Bell shots came out 14 &times; <span class="mono">00</span> and 18 &times; <span class="mono">11</span>. All 16 demo circuits, shots included, were token-exact.</figcaption>
 </figure>
 
 <h2>Does Qwen use it well?</h2>
@@ -173,15 +173,15 @@ ol.principles { padding-left: 1.3rem; } ol.principles li { margin-bottom: 0.7rem
 <p>We asked Qwen3.5-4B 22 questions about circuits, each with one exact probability as the answer. Every circuit the model ran on its QPU was token-exact against the reference: 19 runs and 9,107 model-written tokens, with no mistakes. Merging the QPU barely touches Qwen's text: the KL divergence from the base model's next-token distribution is 4.8&times;10<sup>&minus;4</sup>, and the top token agreed at all 50 positions we checked.</p>
 
 <div class="tablewrap"><table>
-  <thead><tr><th>Questions</th><th>No tool<sup>*</sup></th><th>With its QPU</th></tr></thead>
+  <thead><tr><th>Questions</th><th>No tool, thinking on<sup>*</sup></th><th>With its QPU</th></tr></thead>
   <tbody>
-    <tr><td>Gate-by-gate descriptions<br><span class="c-muted" style="font-size:0.9em">"apply H to q0, then CNOT q0&rarr;q1, then T on q1&hellip;"</span></td><td class="num"><span class="bar m" style="width:1.3rem"></span>2 of 12</td><td class="num"><span class="bar" style="width:8rem"></span>16 of 16</td></tr>
-    <tr><td>Named algorithms Qwen must build<br><span class="c-muted" style="font-size:0.9em">Grover, Deutsch&ndash;Jozsa, QFT, phase estimation</span></td><td class="num">0 of 4</td><td class="num">0 of 6</td></tr>
+    <tr><td>Gate-by-gate descriptions<br><span class="c-muted" style="font-size:0.9em">"apply H to q0, then CNOT q0&rarr;q1, then T on q1&hellip;"</span></td><td class="num"><span class="bar m" style="width:4rem"></span>8 of 16</td><td class="num"><span class="bar" style="width:8rem"></span>16 of 16</td></tr>
+    <tr><td>Named algorithms Qwen must build<br><span class="c-muted" style="font-size:0.9em">Grover, Deutsch&ndash;Jozsa, QFT, phase estimation</span></td><td class="num"><span class="bar m" style="width:1.5rem"></span>3 of 6</td><td class="num">0 of 6</td></tr>
   </tbody>
 </table>
-<p class="c-muted" style="font-size:0.9rem;margin-top:0.4rem"><sup>*</sup> Same model, thinking off, 1,024-token budget, run on the first 16 questions. Most attempts ran out of budget mid-derivation.</p></div>
+<p class="c-muted" style="font-size:0.9rem;margin-top:0.4rem"><sup>*</sup> Same model with Qwen's thinking mode and a 4,096-token budget. With thinking off and 1,024 tokens it managed 2 of 16, mostly running out of budget mid-derivation. The QPU runs used thinking off.</p></div>
 
-<p>The split tells the story. Given an explicit gate sequence, Qwen copies it into QASM correctly every time and the QPU does the rest. Asked to build Grover, Deutsch&ndash;Jozsa, a QFT or phase estimation from the name alone, the 4B model writes a wrong circuit or runs out of tokens explaining it, and the QPU then answers the wrong question exactly. We checked that the machine isn't the bottleneck by putting a host-side simulator behind the same tool in an earlier run: it scored 13 of 16 where the QPU scored 12. The difference is Qwen's own text drifting slightly between the two runs, not the QPU.</p>
+<p>The split tells the story. Given an explicit gate sequence, Qwen copies it into QASM correctly every time and the QPU does the rest, where reasoning alone gets half of them. Asked to build Grover, Deutsch&ndash;Jozsa, a QFT or phase estimation from the name alone, the 4B model without thinking writes a wrong circuit or runs out of tokens explaining it, and the QPU then answers the wrong question exactly. Long thinking does better there, because those questions have well-known answers it can recall; pairing thinking with the QPU is the obvious next run. We checked that the machine isn't the bottleneck by putting a host-side simulator behind the same tool in an earlier run: it scored 13 of 16 where the QPU scored 12. The difference is Qwen's own text drifting slightly between the two runs, not the QPU.</p>
 
 <h2>Limits</h2>
 
