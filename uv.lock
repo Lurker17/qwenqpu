@@ -994,7 +994,7 @@ wheels = [
 [[package]]
 name = "qgpu"
 version = "0.1.0"
-source = { editable = "../vendor/qwenGPU" }
+source = { git = "https://github.com/vixhal-baraiya/qwenGPU?rev=e2695f6a0a818ebc68e2e14b6b990eddf04c51b3#e2695f6a0a818ebc68e2e14b6b990eddf04c51b3" }
 dependencies = [
     { name = "chipformer" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1002,21 +1002,6 @@ dependencies = [
     { name = "textual" },
     { name = "torch" },
     { name = "transformers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "chipformer", git = "https://github.com/divagr18/qwenputer?rev=f07a0b2e38271454c4d455dc2b9bf78d3d399170" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "textual", specifier = ">=1.0" },
-    { name = "torch", specifier = ">=2.14.1" },
-    { name = "transformers", specifier = ">=5.19.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
@@ -1120,7 +1105,7 @@ requires-dist = [
     { name = "chipformer", extras = ["hf"], git = "https://github.com/divagr18/qwenputer?rev=f07a0b2e38271454c4d455dc2b9bf78d3d399170" },
     { name = "flash-linear-attention", specifier = ">=0.6.0" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "qgpu", editable = "../vendor/qwenGPU" },
+    { name = "qgpu", git = "https://github.com/vixhal-baraiya/qwenGPU?rev=e2695f6a0a818ebc68e2e14b6b990eddf04c51b3" },
 ]
 
 [package.metadata.requires-dev]

@@ -15,7 +15,7 @@ dev = ["pytest>=8", "qiskit", "qiskit-aer"]
 
 [tool.uv.sources]
 chipformer = { git = "https://github.com/divagr18/qwenputer", rev = "f07a0b2e38271454c4d455dc2b9bf78d3d399170" }
-qgpu = { path = "../vendor/qwenGPU", editable = true }
+qgpu = { git = "https://github.com/vixhal-baraiya/qwenGPU", rev = "e2695f6a0a818ebc68e2e14b6b990eddf04c51b3" }
 
 [build-system]
 requires = ["hatchling"]
