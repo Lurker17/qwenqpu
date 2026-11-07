@@ -2,7 +2,8 @@
 
 import random
 
-from qqpu.machine import CCZ, CX, CZ, NQ, OPS, SWAP, Gate, H, X, Z, flatten
+from qqpu.machine import (CCZ, COMPLEX_OPS, CX, CZ, NQ, NQC, OPS, SWAP, Gate, H, S, T, X,
+                          Y, Z, flatten)
 
 
 def bell():
@@ -84,6 +85,50 @@ def swap_test_basis():
     return 2, [X(0)] + SWAP(0, 1)
 
 
+def qft(n: int, swaps: bool = True):
+    """The QFT on n <= 3 qubits (Qiskit's QFT): controlled phases pi/2 = CS, pi/4 = CT."""
+    assert n <= 3, "CP(pi/8) is outside Z[w]"
+    g = []
+    for j in reversed(range(n)):
+        g.append(H(j))
+        for k in reversed(range(j)):
+            g.append({1: S(j, k), 2: T(j, k)}[j - k])
+    if swaps:
+        for i in range(n // 2):
+            g += SWAP(i, n - 1 - i)
+    return g
+
+
+def iqft(n: int, swaps: bool = True):
+    from qqpu.machine import Sdg, Tdg
+
+    g = []
+    if swaps:
+        for i in range(n // 2):
+            g += SWAP(i, n - 1 - i)
+    for j in range(n):
+        for k in range(j):
+            g.append({1: Sdg(j, k), 2: Tdg(j, k)}[j - k])
+        g.append(H(j))
+    return g
+
+
+def qft_basis(n: int, x: int):
+    """QFT of the basis state |x>: uniform magnitudes, phases e^{2 pi i x y / 2^n}."""
+    return n, [X(i) for i in range(n) if x >> i & 1] + qft(n)
+
+
+def phase_estimation(gate: str = "t"):
+    """Estimate the phase of T (1/8) or S (1/4) on |1>: 3 counting qubits q0..q2, target q3.
+    Counting qubit i applies U^(2^i); the inverse QFT leaves the phase as a basis state."""
+    powers = {"t": [T, S, Z], "s": [S, Z, None]}[gate]
+    g = [X(3)] + [H(i) for i in range(3)]
+    for i, u in enumerate(powers):
+        if u is not None:
+            g.append(u(3, i))
+    return 4, g + iqft(3)
+
+
 def library() -> dict:
     return {
         "bell": bell(),
@@ -98,14 +143,20 @@ def library() -> dict:
         "superdense_11": superdense(1, 1),
         "teleport": teleport(),
         "swap": swap_test_basis(),
+        "qft3_5": qft_basis(3, 5),
+        "qpe_t": phase_estimation("t"),
+        "qpe_s": phase_estimation("s"),
+        "y_phase": (2, [H(0), Y(1), S(0), CX(0, 1), T(1), Y(0, 1)]),
     }
 
 
-def random_circuit(seed: int, nq: int = NQ, n_gates: int = 20, max_h: int = 24):
+def random_circuit(seed: int, nq: int = NQ, n_gates: int = 20, max_h: int = 24,
+                   cplx: bool = False):
     rng = random.Random(seed)
     g, nh = [], 0
+    ops = [o for o in OPS[1:] if cplx or o not in COMPLEX_OPS]
     while len(g) < n_gates:
-        op = rng.choice(OPS[1:])
+        op = rng.choice(ops)
         if op == "h" and nh >= max_h:
             continue
         q = rng.randrange(nq)
@@ -122,25 +173,17 @@ def random_circuit(seed: int, nq: int = NQ, n_gates: int = 20, max_h: int = 24):
 
 def to_qiskit(nq: int, gates):
     from qiskit import QuantumCircuit
+    from qiskit.circuit.library import (HGate, SdgGate, SGate, TdgGate, TGate, XGate, YGate,
+                                        ZGate)
 
+    lib = {"h": HGate, "x": XGate, "y": YGate, "z": ZGate, "s": SGate, "sdg": SdgGate,
+           "t": TGate, "tdg": TdgGate}
     qc = QuantumCircuit(nq)
     for g in flatten(gates):
-        if g.op == "h":
-            qc.h(g.q)
-        elif g.op == "x":
-            if not g.ctrl:
-                qc.x(g.q)
-            else:
-                qc.mcx(list(g.ctrl), g.q)
-        elif g.op == "z":
-            if not g.ctrl:
-                qc.z(g.q)
-            elif len(g.ctrl) == 1:
-                qc.cz(g.ctrl[0], g.q)
-            else:
-                qc.h(g.q)
-                qc.mcx(list(g.ctrl), g.q)
-                qc.h(g.q)
+        gate = lib[g.op]()
+        if g.ctrl:
+            gate = gate.control(len(g.ctrl))
+        qc.append(gate, [*g.ctrl, g.q])
     return qc
 
 

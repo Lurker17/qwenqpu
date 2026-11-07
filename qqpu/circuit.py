@@ -2,18 +2,22 @@
 
 Every weight is computed; nothing is trained. Per token, in one forward pass:
 
-1. Record and counter heads: which record we are in (GATE g / AMP i / PROG g / CONF), and j,
-   the number of VALs since the record started (a halving head, Qwenputer's counter).
+1. Record, register-size and counter heads: which record we are in (GATE g / AMP i / PROG g /
+   CONF), the mode (real or complex) and j, the number of VALs since the record started.
 2. ROM head: gate g's instruction word (op, target q, control mask), written by PROG records.
-3. The pair walk: own(j, q) (the amplitude the next VAL rewrites) and its partner own ^ 2^q,
-   as one-hot queries; whether the controls are satisfied; which of five exclusive cases the
-   value is (copy, own + partner, partner - own, partner, -own).
-4. Two amplitude heads hold the state, one row per basis state, 16 bits each. Copy A writes a
-   VAL's payload at the VAL token itself; copy B one token later. The own amplitude is read
-   from A and the partner from B, so both reads see the amplitudes from *before* the gate
-   although the record rewrites them in place (see `machine.py` for the order).
-5. A 16-bit carry-lookahead adder (two MLP layers) computes the case's value, and the output
-   code makes the model's lm_head predict VAL(value), the next GATE, or END.
+3. The pair walk: amplitude slot a and component c of the value due next (a = j, c = 0 in real
+   mode; a = j >> 2, c = j & 3 in complex mode), own(a, q) and its partner own ^ 2^q as one-hot
+   queries, whether the controls hold, and the value's kind: w^m * own, w^m * partner, or
+   own +- partner (H).
+4. The state: per component, two buffers (gate g reads buffer g mod 2 and writes the other) and
+   two read copies of each (one queried at own, one at the partner): 16 DeltaNet heads, one row
+   per basis state. A VAL token's payload is written at the VAL token itself, into the buffer
+   and component it belongs to (key: the row chosen one token earlier; write gate: buffer and
+   component).
+5. Operands: component c of w^m x is +-x[(c - m) mod 4], so each operand is a 4-way select
+   with an optional complement; one 16-bit carry-lookahead add finishes the value (a negation
+   is complement + 1 through the carry in).
+6. The output code makes the model's lm_head predict VAL(value), the next GATE, or END.
 """
 
 from chipformer.dsl.graph import Expr
@@ -22,40 +26,41 @@ from chipformer.q35.prims import Circ, from_bits
 
 from qgpu.circuit.gadgets import adder_stage2, counter, stage1_digits, thead, thermo
 from qqpu.machine import (
-    AMP,
-    CONF,
+    AMP0,
+    CONF0,
     END,
     GATE0,
     GBITS,
+    KINDS,
+    NCOMP,
     NQ,
+    NQC,
     OPBITS,
     OPS,
     PROG,
     QBITS,
     TEXT,
     W,
+    Gate,
+    jidx,
     kind,
+    kind_of,
+    rot_src,
 )
 
 NCODE = 17  # every chip token id is < 2^17
 CODE_AMP = 128
 KAPPA = 2.0**-20
 TAU_TEXT = 2.0**-40
-
-
-def jidx(q: int, r: int) -> int:
-    """The VAL index j at which a gate on target q rewrites row r (inverse of own_row)."""
-    lo = r & (1 << q) - 1
-    hi = r >> (q + 1)
-    return 2 * (hi << q | lo) + (r >> q & 1)
+JMAX = max(1 << NQ, NCOMP << NQC)  # VALs per gate record, at most
 
 
 class QPU(Circ):
-    def __init__(self, target: Target | None = None, nq: int = NQ) -> None:
+    def __init__(self, target: Target | None = None) -> None:
         super().__init__(target or Target())
         c, one = self, self.one
-        R = 1 << nq
-        self.nq_max = nq
+        R = 1 << NQ
+        RC = 1 << NQC
 
         def feat(name, fn):
             return c.token_feature(name, fn, full=True)
@@ -65,28 +70,37 @@ class QPU(Circ):
 
         is_val = feat("is_val", lambda t: int(kind(t) == "val"))
         is_gate = feat("is_gate", lambda t: int(kind(t) == "gate"))
+        is_amp = feat("is_amp", lambda t: int(kind(t) == "amp"))
         is_conf = feat("is_conf", lambda t: int(kind(t) == "conf"))
         pay = [feat(f"pay{b}", lambda t, b=b: int(kind(t) == "val" and t >> b & 1))
                for b in range(W)]
         gb = [feat(f"gb{b}", lambda t, b=b: int(kind(t) == "gate" and (t - GATE0) >> b & 1))
               for b in range(GBITS)]
-        cb = [feat(f"cb{b}", lambda t, b=b: int(kind(t) == "conf" and (t - CONF(1) + 1) >> b & 1))
-              for b in range(3)]
-        amp_at = [feat(f"amp{r}", lambda t, r=r: int(t == AMP(r))) for r in range(R)]
+        ab = [feat(f"ab{b}", lambda t, b=b: int(kind(t) == "amp" and (t - AMP0) >> b & 1))
+              for b in range(NQ)]
+        cb = [feat(f"cb{b}", lambda t, b=b: int(kind(t) == "conf" and (t - CONF0) >> b & 1))
+              for b in range(4)]
         start = one - is_val  # every other token starts a record (text included)
 
-        # --- record, register size, counter -------------------------------------------
+        # --- record, mode, counter ---------------------------------------------------------
         (rec,) = thead(c, "rec", {0: start}, {0: one},
-                       [{"data": {2: is_gate, **{3 + b: gb[b] for b in range(GBITS)}},
-                         "ref": one}])
-        r_gate, r_g = rec[0], rec[1:1 + GBITS]
+                       [{"data": {2: is_gate, 3: is_amp,
+                                  **{4 + b: gb[b] for b in range(GBITS)},
+                                  **{4 + GBITS + b: ab[b] for b in range(NQ)}}, "ref": one}])
+        r_gate, r_amp = rec[0], rec[1]
+        r_g, r_a = rec[2:2 + GBITS], rec[2 + GBITS:2 + GBITS + NQ]
         (conf,) = thead(c, "conf", {0: is_conf}, {0: one},
-                        [{"data": {2 + b: cb[b] for b in range(3)}, "ref": one}])
-        nq_oh = c.onehot_of_bits(conf, "nq", nq + 1)  # nq_oh[n]: the register has n qubits
-        jt = thermo(c, counter(c, "j", start, is_val), start, R + 1, "j")
+                        [{"data": {2 + b: cb[b] for b in range(4)}, "ref": one}])
+        nq_oh = c.onehot_of_bits(conf[:3], "nq", NQ + 1)  # nq_oh[n]: the register has n qubits
+        cplx = conf[3]
+        real = one - cplx
+        jt = thermo(c, counter(c, "j", start, is_val), start, JMAX + 1, "j")
 
         def j_is(k: int) -> Expr:
             return (one if k == 0 else jt[k - 1]) - jt[k]
+
+        def j_in4(k: int) -> Expr:  # 4k <= j < 4k + 4
+            return (one if k == 0 else jt[4 * k - 1]) - jt[4 * k + 3]
 
         # --- fetch -------------------------------------------------------------------------
         g_oh = c.onehot_of_bits(r_g, "g")
@@ -94,69 +108,138 @@ class QPU(Circ):
         rom_keys = {g: lag(feat(f"prog{g}", lambda t, g=g: int(t == PROG(g))), 1)
                     for g in range(nprog)}
         rom_q = {g: c.and_([r_gate, g_oh[g]], f"romq{g}") for g in range(nprog)}
-        wbits = OPBITS + QBITS + nq
+        wbits = OPBITS + QBITS + NQ
         (word,) = thead(c, "rom", rom_keys, rom_q,
                         [{"data": {2 + b: lag(pay[b], 0) for b in range(wbits)}, "ref": one}])
         op_oh = c.onehot_of_bits(word[:OPBITS], "op", len(OPS))
-        op_halt, op_h, op_x, op_z = (op_oh[OPS.index(o)] for o in ("halt", "h", "x", "z"))
-        q_oh = c.onehot_of_bits(word[OPBITS:OPBITS + QBITS], "q", nq)
-        ctrl = word[OPBITS + QBITS:OPBITS + QBITS + nq]
+        op = dict(zip(OPS, op_oh))
+        q_oh = c.onehot_of_bits(word[OPBITS:OPBITS + QBITS], "q", NQ)
+        ctrl = word[OPBITS + QBITS:OPBITS + QBITS + NQ]
 
-        # j < 2^nq: a value is due; j == 2^nq: the record is done
-        due = c.node([t for n in range(1, nq + 1)
-                      for t in c.t_and([nq_oh[n], one - jt[(1 << n) - 1]])], "due")
-        done = c.node([t for n in range(1, nq + 1)
-                       for t in c.t_and([nq_oh[n], jt[(1 << n) - 1], one - jt[1 << n]])],
-                      "done")
-        live = c.and_([r_gate, one - op_halt, due], "live")
+        # values per record: 2^nq (real) or 4 * 2^nq (complex); j < that: a value is due
+        def n_vals(n, cx):
+            return (NCOMP if cx else 1) << n
+
+        modes = [(real, False)] + [(cplx, True)]
+        due = c.node([t for n in range(1, NQ + 1) for lit, cx in modes
+                      if not (cx and n > NQC)
+                      for t in c.t_and([nq_oh[n], lit, one - jt[n_vals(n, cx) - 1]])], "due")
+        done = c.node([t for n in range(1, NQ + 1) for lit, cx in modes
+                       if not (cx and n > NQC)
+                       for t in c.t_and([nq_oh[n], lit, jt[n_vals(n, cx) - 1],
+                                         one - jt[n_vals(n, cx)]])], "done")
+        live = c.and_([r_gate, one - op["halt"], due], "live")
 
         # --- the pair walk -----------------------------------------------------------------
-        own = [c.node([t for q in range(nq) for t in c.t_and([live, q_oh[q], j_is(jidx(q, r))])],
-                      f"own{r}") for r in range(R)]
-        par = [c.node([t for q in range(nq)
-                       for t in c.t_and([live, q_oh[q], j_is(jidx(q, r ^ 1 << q))])],
-                      f"par{r}") for r in range(R)]
+        def slot_terms(r_of_q, lits):
+            """Units: amplitude slot == jidx(q, r_of_q(q)) for the decoded target q."""
+            terms = []
+            for q in range(NQ):
+                r = r_of_q(q)
+                if r >= R:
+                    continue
+                k = jidx(q, r)
+                terms += c.t_and([*lits, q_oh[q], real, j_is(k)])
+                if r < RC and q < NQC:
+                    terms += c.t_and([*lits, q_oh[q], cplx, j_in4(k)])
+            return terms
+
+        own = [c.node(slot_terms(lambda q, r=r: r, [live]), f"own{r}") for r in range(R)]
+        par = [c.node(slot_terms(lambda q, r=r: r ^ 1 << q, [live]), f"par{r}")
+               for r in range(R)]
         active = c.node([t for r in range(R)
-                         for t in c.t_and([own[r]] + [one - ctrl[b] for b in range(nq)
+                         for t in c.t_and([own[r]] + [one - ctrl[b] for b in range(NQ)
                                                       if not r >> b & 1])], "active")
-        e = sum((j_is(k) for k in range(1, R, 2)), Expr())  # the pair's |1> element
-        case = {
-            "copy": c.node(c.t_and([live, one - active])
-                           + c.t_and([live, active, op_z, one - e]), "c.copy"),
-            "add": c.and_([live, active, op_h, one - e], "c.add"),
-            "sub": c.and_([live, active, op_h, e], "c.sub"),
-            "x": c.and_([live, active, op_x], "c.x"),
-            "neg": c.and_([live, active, op_z, e], "c.neg"),
-        }
+        e_real = sum((j_is(k) for k in range(1, R, 2)), Expr())
+        e_cplx = sum((j_in4(k) for k in range(1, RC, 2)), Expr())
+        e = c.node(c.t_and([real, e_real]) + c.t_and([cplx, e_cplx]), "e")
+        # component of the value due (cc) and of a VAL token's own payload (vcomp)
+        cc = [c.node((c.t_and([real]) if k == 0 else [])
+                     + c.t_and([cplx, sum((j_is(4 * a + k) for a in range(RC)), Expr())]),
+                     f"cc{k}") for k in range(NCOMP)]
+        vcomp = [c.node((c.t_and([is_val, real]) if k == 0 else [])
+                        + c.t_and([is_val, cplx,
+                                   sum((j_is(4 * a + k + 1) for a in range(RC)), Expr())]),
+                        f"vcomp{k}") for k in range(NCOMP)]
+
+        # the value's kind, from (op, e, active)
+        kterms: dict[str, list] = {k: [] for k in KINDS}
+        kterms["own0"] += c.t_and([live, one - active])
+        for o in OPS[1:]:
+            for ev in (0, 1):
+                k = kind_of(Gate(o), ev, True)
+                kterms[k] += c.t_and([live, active, op[o], e if ev else one - e])
+        kinds = {k: c.node(t, f"kind.{k}") for k, t in kterms.items() if t}
+
+        def operand_sel(which):
+            """(pos[idx], neg[idx]): component idx of the source enters as is / complemented."""
+            pos = [[] for _ in range(NCOMP)]
+            neg = [[] for _ in range(NCOMP)]
+            for k, node in kinds.items():
+                m = KINDS[k][which]
+                if m is None:
+                    continue
+                for cmp in range(NCOMP):
+                    idx, sign = rot_src(cmp, m)
+                    (pos if sign > 0 else neg)[idx] += c.t_and([node, cc[cmp]])
+            return ([c.node(t, f"sel{which}.p{i}") for i, t in enumerate(pos)],
+                    [c.node(t, f"sel{which}.n{i}") for i, t in enumerate(neg)])
+
+        own_pos, own_neg = operand_sel(0)
+        par_pos, par_neg = operand_sel(1)
 
         # --- amplitude memory --------------------------------------------------------------
-        # wr[r]: the payload of the *next* token goes to row r (AMP records, and every VAL the
+        aoh = c.onehot_of_bits(r_a, "a")
+        amp_due = c.node(c.t_and([r_amp, real, one - jt[0]]) + c.t_and([r_amp, cplx, one - jt[3]]),
+                         "amp_due")
+        # wr[r]: the payload of the next token goes to row r (AMP records and every VAL the
         # circuit predicts)
-        wr = [amp_at[r] + own[r] for r in range(R)]
-        data_a = {2 + b: lag(pay[b], 0) for b in range(W)}
-        data_b = {2 + b: lag(pay[b], 1) for b in range(W)}
-        (a_bits,) = thead(c, "ampA", {r: lag(wr[r], 1) for r in range(R)},
-                          {r: own[r] for r in range(R)}, [{"data": data_a, "ref": one}])
-        (b_bits,) = thead(c, "ampB", {r: lag(wr[r], 2) for r in range(R)},
-                          {r: par[r] for r in range(R)}, [{"data": data_b, "ref": one}])
-        self.amp_heads = (c.nodes[-2], c.nodes[-1])
+        wr = [c.and_([amp_due, aoh[r]], f"ampwr{r}") + own[r] for r in range(R)]
+        rd1 = r_g[0]  # gate g reads buffer g mod 2 ...
+        wb = {0: c.node(c.t_and([r_gate, rd1]) + c.t_and([r_amp]), "wb0"),
+              1: c.and_([r_gate, one - rd1], "wb1")}  # ... and writes the other (AMP: 0)
+        keys = {r: lag(wr[r], 1) for r in range(R)}
+        data = {2 + b: lag(pay[b], 0) for b in range(W)}
+        q_own = {b: {r: c.and_([own[r], rd1 if b else one - rd1], f"qown{b}.{r}")
+                     for r in range(R)} for b in (0, 1)}
+        q_par = {b: {r: c.and_([par[r], rd1 if b else one - rd1], f"qpar{b}.{r}")
+                     for r in range(R)} for b in (0, 1)}
+        own_bits = [[Expr() for _ in range(W)] for _ in range(NCOMP)]
+        par_bits = [[Expr() for _ in range(W)] for _ in range(NCOMP)]
+        self.amp_heads = {}
+        for b in (0, 1):
+            for k in range(NCOMP):
+                beta = c.and_([is_val, vcomp[k], wb[b]], f"beta{b}.{k}")
+                rows = R if k == 0 else RC
+                kk = {r: keys[r] for r in range(rows)}
+                (ob,) = thead(c, f"amp{b}.{k}.own", kk, {r: q_own[b][r] for r in range(rows)},
+                              [{"data": data, "ref": one, "beta": beta}])
+                self.amp_heads[b, k] = c.nodes[-1]
+                (pb,) = thead(c, f"amp{b}.{k}.par", kk, {r: q_par[b][r] for r in range(rows)},
+                              [{"data": data, "ref": one, "beta": beta}])
+                for i in range(W):
+                    own_bits[k][i] = own_bits[k][i] + ob[i]
+                    par_bits[k][i] = par_bits[k][i] + pb[i]
 
-        # --- the value: one 16-bit add over exclusive cases ---------------------------------
+        # --- the value ---------------------------------------------------------------------
+        def operand(bits, pos, neg, name):
+            return [c.node([t for i in range(NCOMP)
+                            for t in c.t_and([pos[i], bits[i][b]])
+                            + c.t_and([neg[i], one - bits[i][b]])], f"{name}.b{b}")
+                    for b in range(W)]
+
+        xo = operand(own_bits, own_pos, own_neg, "xo")
+        xp = operand(par_bits, par_pos, par_neg, "xp")
+        cin = sum(own_neg, Expr()) + sum(par_neg, Expr())
         nib = W // 4
-        sums = []
-        for k in range(nib):
-            o = from_bits(a_bits[4 * k:4 * k + 4])
-            p = from_bits(b_bits[4 * k:4 * k + 4])
-            cin = 1 if k == 0 else 0
-            sums.append([(o, [case["copy"]]), (o + p, [case["add"]]),
-                         (15 - o + p + cin, [case["sub"]]), (p, [case["x"]]),
-                         (15 - o + cin, [case["neg"]])])
-        g_, p_, d_ = stage1_digits(c, sums, "val", 31)
+        sums = [[(from_bits(xo[4 * k:4 * k + 4]) + from_bits(xp[4 * k:4 * k + 4])
+                  + (cin if k == 0 else 0), [])] for k in range(nib)]
+        g_, p_, d_ = stage1_digits(c, sums, "val", 32)
         value, _ = adder_stage2(c, g_, p_, d_, nib, "val")
 
         # --- the next token ----------------------------------------------------------------
-        out_gate = c.and_([r_gate, one - op_halt, done], "out.gate")
-        out_end = c.and_([r_gate, op_halt], "out.end")
+        out_gate = c.and_([r_gate, one - op["halt"], done], "out.gate")
+        out_end = c.and_([r_gate, op["halt"]], "out.end")
         inc = [sum((g_oh[g] for g in range(nprog - 1) if (g + 1) >> b & 1), Expr())
                for b in range(GBITS)]
         nxt = []
@@ -212,15 +295,18 @@ def predicted(c: QPU, m, t: int) -> int | None:
     return sum(int(m[t, dim(b)]) << i for i, b in enumerate(c.next_bits) if b.terms)
 
 
-def amplitudes(c: QPU, carry: dict, nq: int) -> list[int]:
-    """The state from copy A's recurrent state after a run (what the host reads back)."""
+def amplitudes(c: QPU, carry: dict, nq: int, cplx: bool, buffer: int) -> list[tuple]:
+    """The state from the own-copy heads' recurrent state after a run (the host's read)."""
     from qqpu.machine import to_signed
 
     index = {id(n): i for i, n in enumerate(c.nodes)}
-    state = carry.get((index[id(c.amp_heads[0])], "S", 0), {})
     out = []
     for r in range(1 << nq):
-        vec = state.get(r)
-        v = 0 if vec is None else sum(int(vec[2 + b] > 0) << b for b in range(W))
-        out.append(to_signed(v))
+        comps = []
+        for k in range(NCOMP if cplx else 1):
+            state = carry.get((index[id(c.amp_heads[buffer, k])], "S", 0), {})
+            vec = state.get(r)
+            v = 0 if vec is None else sum(int(vec[2 + b] > 0) << b for b in range(W))
+            comps.append(to_signed(v))
+        out.append(tuple(comps) + (0,) * (4 - len(comps)))
     return out

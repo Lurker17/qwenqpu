@@ -1,43 +1,55 @@
 """The QPU: an exact statevector machine, its instruction set and its token trace.
 
-State: 2^nq real amplitudes, each a 16-bit two's-complement integer, and a global scale
-1/sqrt(2)^k where k is the number of H gates run so far. Every gate of the real Clifford+Toffoli
-family keeps amplitudes in Z / sqrt(2)^k, so the machine is exact: no rounding anywhere.
+Amplitudes are exact elements of Z[w] / sqrt(2)^k, w = exp(i pi / 4): each amplitude is four
+16-bit two's-complement integers (a0, a1, a2, a3) meaning a0 + a1 w + a2 w^2 + a3 w^3, and the
+whole state shares the scale 1 / sqrt(2)^k, k = the number of H gates run so far. Clifford+T is
+closed over this ring, so the machine never rounds:
 
-    H(q)                  pair (i0, i1) differing in bit q:  i0' = i0 + i1,  i1' = i0 - i1  (k += 1)
-    X(q),  ctrl mask C    i0' = i1, i1' = i0       on pairs whose index has every bit of C set
-    Z(q),  ctrl mask C    i1' = -i1                (CZ, CCZ: Z with controls)
+    H(q)                     i0' = i0 + i1,  i1' = i0 - i1                       (k += 1)
+    X(q) / Y(q)              i0' = i1, i1' = i0  /  i0' = -i i1, i1' = i i0
+    Z, S, Sdg, T, Tdg (q)    i1' = w^m i1 with m = 4, 2, 6, 1, 7  (multiplying by w^m rotates
+                             the four components, negating the ones that wrap around)
 
-so CNOT = X with one control, Toffoli = X with two, CZ / CCZ likewise. {H, Toffoli} is
-universal for real-amplitude quantum computation (Shi 2003, Aharonov 2003).
+Every gate but H takes a control mask (CNOT, Toffoli, CZ, CCZ, CS, CT, controlled-Y, ...).
+
+Two modes, set by the host per program (CONF record):
+  real     only a0 is carried (H, X, Z and controls): one VAL token per amplitude, up to NQ qubits
+  complex  all four components: four VAL tokens per amplitude, up to NQC qubits
 
 A gate record rewrites every amplitude, pair by pair (the pairs of its target qubit, lowest index
-first, the |0> element of each pair first):
+first, the |0> element first; component 0 first in complex mode):
 
-    GATE(g)  VAL(a'_own(0))  VAL(a'_own(1))  ...  VAL(a'_own(2^nq - 1))
+    GATE(g)  VAL ... VAL  GATE(g + 1)
 
-then GATE(g + 1). The program sits in a ROM written by the host: PROG(g) VAL(word). A HALT gate
-ends the run: the model writes END after its GATE token. Host records before the run: CONF(nq)
-(the register size), PROG(g) VAL(word) for each gate, AMP(i) VAL(a) for the initial state, and
-the first GATE(0). From there every token is the model's.
+The state lives in two buffers: gate g reads buffer g mod 2 and writes buffer (g + 1) mod 2, so
+every value is computed from the state before the gate. The program sits in a ROM written by the
+host (PROG(g) VAL(word)); HALT ends the run: the model writes END after its GATE token. Host
+records before the run: CONF(nq, complex), PROG(g) VAL(word) per gate, AMP(i) VAL x components
+(initial state, into buffer 0), and the first GATE(0). From there every token is the model's.
 """
 
+import cmath
+import math
 from dataclasses import dataclass, field
 
-NQ = 5  # qubits the machine holds (2^NQ amplitude rows)
-W = 16  # bits per amplitude
+NQ = 5  # qubits in real mode (2^NQ amplitude rows)
+NQC = 4  # qubits in complex mode (4 components per amplitude: j up to 64)
+NCOMP = 4
+W = 16  # bits per component
 VAL_MAX = 1 << W
 GBITS = 6  # up to 64 gates per program (HALT included)
 
-OPS = ("halt", "h", "x", "z")
-OPBITS = 3
+OPS = ("halt", "h", "x", "z", "y", "s", "sdg", "t", "tdg")
+COMPLEX_OPS = {"y", "s", "sdg", "t", "tdg"}
+PHASE = {"z": 4, "s": 2, "sdg": 6, "t": 1, "tdg": 7}  # i1' = w^m i1
+OPBITS = 4
 QBITS = 3
 
 GATE0 = VAL_MAX
 PROG0 = GATE0 + (1 << GBITS)
 AMP0 = PROG0 + (1 << GBITS)
 CONF0 = AMP0 + 128
-END = CONF0 + 8
+END = CONF0 + 16
 TEXT = END + 1  # every Qwen text token reaches the circuit as this one token (merged model)
 CHIP_VOCAB = TEXT
 
@@ -57,9 +69,9 @@ def AMP(i: int) -> int:
     return AMP0 + i
 
 
-def CONF(nq: int) -> int:
-    assert 1 <= nq <= NQ
-    return CONF0 + nq
+def CONF(nq: int, cplx: bool = False) -> int:
+    assert 1 <= nq <= (NQC if cplx else NQ)
+    return CONF0 + nq + 8 * int(cplx)
 
 
 def kind(t: int) -> str:
@@ -84,7 +96,8 @@ def token_name(t: int) -> str:
     if k == "amp":
         return f"<|q_amp {t - AMP0}|>"
     if k == "conf":
-        return f"<|q_conf {t - CONF0}|>"
+        x = t - CONF0
+        return f"<|q_conf {x & 7}{' c' if x >> 3 else ''}|>"
     if k == "end":
         return "<|q_end|>"
     raise ValueError(t)
@@ -103,7 +116,8 @@ class Gate:
         assert self.op in OPS, self.op
         assert 0 <= self.q < NQ and all(0 <= c < NQ for c in self.ctrl)
         assert self.q not in self.ctrl, "a qubit cannot control itself"
-        assert self.op != "h" or not self.ctrl, "controlled H leaves Z / sqrt(2)^k"
+        assert len(set(self.ctrl)) == len(self.ctrl)
+        assert self.op != "h" or not self.ctrl, "controlled H leaves Z[w] / sqrt(2)^k"
 
     @property
     def mask(self) -> int:
@@ -135,8 +149,28 @@ def X(q, *ctrl):
     return Gate("x", q, tuple(ctrl))
 
 
+def Y(q, *ctrl):
+    return Gate("y", q, tuple(ctrl))
+
+
 def Z(q, *ctrl):
     return Gate("z", q, tuple(ctrl))
+
+
+def S(q, *ctrl):
+    return Gate("s", q, tuple(ctrl))
+
+
+def Sdg(q, *ctrl):
+    return Gate("sdg", q, tuple(ctrl))
+
+
+def T(q, *ctrl):
+    return Gate("t", q, tuple(ctrl))
+
+
+def Tdg(q, *ctrl):
+    return Gate("tdg", q, tuple(ctrl))
 
 
 def CX(c, t):
@@ -166,15 +200,53 @@ def flatten(gates) -> list[Gate]:
     return out
 
 
+def is_complex(gates) -> bool:
+    return any(g.op in COMPLEX_OPS for g in flatten(gates))
+
+
+# --- ring arithmetic --------------------------------------------------------------------------
+
+
+def rot(x: tuple, m: int) -> tuple:
+    """w^m * x for x = (x0, x1, x2, x3) in Z[w]."""
+    out = [0] * 4
+    for i, v in enumerate(x):
+        e = i + m
+        out[e % 4] += v if (e // 4) % 2 == 0 else -v
+    return tuple(out)
+
+
+def rot_src(c: int, m: int) -> tuple[int, int]:
+    """Component c of w^m x is sign * x[idx]: returns (idx, sign)."""
+    idx = (c - m) % 4
+    return idx, (1 if ((idx + m) // 4) % 2 == 0 else -1)
+
+
+def add(x, y):
+    return tuple(a + b for a, b in zip(x, y))
+
+
+def value(x: tuple) -> complex:
+    w = cmath.exp(1j * math.pi / 4)
+    return sum(v * w**i for i, v in enumerate(x))
+
+
 # --- the pair walk ----------------------------------------------------------------------------
 
 
-def own_row(j: int, q: int) -> int:
-    """The amplitude the j-th VAL of a gate on target q rewrites: pair p = j >> 1 with a 0
-    inserted at bit q, then bit q = j & 1."""
-    p, e = j >> 1, j & 1
+def own_row(a: int, q: int) -> int:
+    """The amplitude the a-th amplitude slot of a gate on target q rewrites: pair p = a >> 1
+    with a 0 inserted at bit q, then bit q = a & 1."""
+    p, e = a >> 1, a & 1
     lo = p & (1 << q) - 1
     return (p >> q) << (q + 1) | e << q | lo
+
+
+def jidx(q: int, r: int) -> int:
+    """The amplitude slot at which a gate on target q rewrites row r (inverse of own_row)."""
+    lo = r & (1 << q) - 1
+    hi = r >> (q + 1)
+    return 2 * (hi << q | lo) + (r >> q & 1)
 
 
 def to_signed(v: int) -> int:
@@ -182,21 +254,40 @@ def to_signed(v: int) -> int:
     return v - VAL_MAX if v >> (W - 1) else v
 
 
-def step_value(g: Gate, j: int, amps: list[int]) -> int:
-    """The j-th value of gate g, from the amplitudes before the gate (two's complement)."""
-    own = own_row(j, g.q)
+ZERO = (0, 0, 0, 0)
+
+# The value of one amplitude as (m_own, m_par): w^m_own * own + w^m_par * par (None: absent)
+KINDS = {
+    "own0": (0, None), "own1": (1, None), "own2": (2, None), "own3": (3, None),
+    "own4": (4, None), "own5": (5, None), "own6": (6, None), "own7": (7, None),
+    "par0": (None, 0), "par2": (None, 2), "par6": (None, 6),
+    "h0": (0, 0), "h1": (4, 0),
+}
+
+
+def kind_of(g: Gate, e: int, active: bool) -> str:
+    if not active:
+        return "own0"
+    if g.op == "h":
+        return "h0" if e == 0 else "h1"
+    if g.op == "x":
+        return "par0"
+    if g.op == "y":
+        return "par6" if e == 0 else "par2"
+    return "own0" if e == 0 else f"own{PHASE[g.op]}"
+
+
+def step_amp(g: Gate, a: int, amps: list[tuple]) -> tuple:
+    """New value of the a-th amplitude slot of gate g, from the state before the gate."""
+    own = own_row(a, g.q)
     par = own ^ 1 << g.q
-    e = j & 1
-    a, b = amps[own], amps[par]
-    active = own & g.mask == g.mask
-    if not active or g.op == "z" and e == 0:
-        v = a
-    elif g.op == "h":
-        v = a + b if e == 0 else b - a
-    elif g.op == "x":
-        v = b
-    else:  # z, e = 1
-        v = -a
+    e = a & 1
+    mo, mp = KINDS[kind_of(g, e, own & g.mask == g.mask)]
+    v = ZERO
+    if mo is not None:
+        v = add(v, rot(amps[own], mo))
+    if mp is not None:
+        v = add(v, rot(amps[par], mp))
     return v
 
 
@@ -204,70 +295,83 @@ class Overflow(Exception):
     pass
 
 
-def run_gate(g: Gate, amps: list[int], nq: int) -> list[int]:
-    """The VAL values of one gate record (signed), in emission order."""
-    vals = []
-    for j in range(1 << nq):
-        v = step_value(g, j, amps)
-        if not -(1 << W - 1) <= v < 1 << W - 1:
-            raise Overflow(f"{g}: amplitude {v} does not fit {W} bits")
-        vals.append(v)
-    return vals
-
-
 @dataclass
 class Trace:
     tokens: list[int]
     owned: list[int]  # positions whose next token the model writes
-    amps: list[int]  # final integer amplitudes
+    amps: list[tuple]  # final amplitudes, in Z[w] components
     k: int  # number of H gates: the state is amps / sqrt(2)^k
     nq: int
+    cplx: bool
     gates: list[Gate] = field(default_factory=list)
 
     def statevector(self):
         import numpy as np
 
-        return np.array(self.amps, dtype=float) / 2 ** (self.k / 2)
+        return np.array([value(a) for a in self.amps]) / 2 ** (self.k / 2)
 
     def probabilities(self):
         import numpy as np
 
-        a = np.array(self.amps, dtype=float)
-        return a * a / 2.0**self.k
+        return np.abs(self.statevector()) ** 2
+
+    @property
+    def final_buffer(self) -> int:
+        return len(self.gates) % 2
 
 
-def host_tokens(gates: list[Gate], nq: int, init: list[int] | None = None) -> list[int]:
-    """What the host feeds: register size, program ROM, initial state, the first GATE."""
+def ncomp(cplx: bool) -> int:
+    return NCOMP if cplx else 1
+
+
+def host_tokens(gates: list[Gate], nq: int, init: list | None = None,
+                cplx: bool | None = None) -> list[int]:
+    """What the host feeds: register size and mode, program ROM, initial state, first GATE."""
     gates = flatten(gates)
+    cplx = is_complex(gates) if cplx is None else cplx
+    assert not (is_complex(gates) and not cplx), "complex gates need complex mode"
+    assert nq <= (NQC if cplx else NQ), "too many qubits for this mode"
     assert all(g.q < nq and all(c < nq for c in g.ctrl) for g in gates), "qubit out of range"
     assert len(gates) + 1 <= 1 << GBITS, "program too long"
-    init = init or [1] + [0] * ((1 << nq) - 1)
-    assert len(init) == 1 << nq
-    toks = [CONF(nq)]
+    init = norm_init(init, nq)
+    toks = [CONF(nq, cplx)]
     for i, g in enumerate([*gates, Gate("halt")]):
         toks += [PROG(i), g.encode()]
     for i, a in enumerate(init):
-        toks += [AMP(i), a & VAL_MAX - 1]
+        toks += [AMP(i)] + [x & VAL_MAX - 1 for x in a[:ncomp(cplx)]]
     return toks + [GATE(0)]
 
 
-def trace(gates, nq: int, init: list[int] | None = None) -> Trace:
+def norm_init(init, nq):
+    init = init or [1] + [0] * ((1 << nq) - 1)
+    assert len(init) == 1 << nq
+    return [tuple(a) + (0,) * (4 - len(a)) if isinstance(a, tuple) else (a, 0, 0, 0)
+            for a in init]
+
+
+def trace(gates, nq: int, init: list | None = None, cplx: bool | None = None) -> Trace:
     gates = flatten(gates)
-    toks = host_tokens(gates, nq, init)
-    amps = list(init or [1] + [0] * ((1 << nq) - 1))
+    cplx = is_complex(gates) if cplx is None else cplx
+    toks = host_tokens(gates, nq, init, cplx)
+    amps = norm_init(init, nq)
+    nc = ncomp(cplx)
     owned = []
     k = 0
     for gi, g in enumerate(gates):
-        vals = run_gate(g, amps, nq)
         new = list(amps)
-        for j, v in enumerate(vals):
-            owned.append(len(toks) - 1)
-            toks.append(v & VAL_MAX - 1)
-            new[own_row(j, g.q)] = v
+        for a in range(1 << nq):
+            v = step_amp(g, a, amps)
+            if any(not -(1 << W - 1) <= x < 1 << W - 1 for x in v):
+                raise Overflow(f"{g}: amplitude {v} does not fit {W} bits")
+            assert cplx or v[1:] == (0, 0, 0)
+            for c in range(nc):
+                owned.append(len(toks) - 1)
+                toks.append(v[c] & VAL_MAX - 1)
+            new[own_row(a, g.q)] = v
         amps = new
         k += g.op == "h"
         owned.append(len(toks) - 1)
         toks.append(GATE(gi + 1))
     owned.append(len(toks) - 1)  # the HALT gate's token: the model writes END
     toks.append(END)
-    return Trace(toks, owned, amps, k, nq, gates)
+    return Trace(toks, owned, amps, k, nq, cplx, gates)

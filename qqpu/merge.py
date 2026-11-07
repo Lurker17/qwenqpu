@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 
 from qqpu.circuit import QPU
-from qqpu.machine import CHIP_VOCAB, TEXT, token_name
+from qqpu.machine import CHIP_VOCAB, NQ, NQC, TEXT, token_name
 
 TEXT_PREFIX = "model.language_model."
 
@@ -129,7 +129,7 @@ def build_merged(src, dst, mute_qwen: bool = True):
     meta = {"base": src.name, "chip_token_offset": v0, "chip_vocab": CHIP_VOCAB,
             "chip_layers": n_chip, "qwen_layers": n0, "hidden": hidden,
             "chip_dims_offset": d0, "ballast_dims": m, "slots": alloc.n_slots,
-            "muted": mute_qwen, "nq": c.nq_max}
+            "muted": mute_qwen, "nq": NQ, "nq_complex": NQC}
     (dst / "qqpu.json").write_text(json.dumps(meta, indent=2))
     return c, lay
 

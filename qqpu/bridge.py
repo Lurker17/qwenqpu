@@ -17,15 +17,22 @@ import torch
 
 from qqpu.circuit import QPU
 from qqpu.hf import Device
-from qqpu.machine import CCX, CX, CZ, END, NQ, SWAP, Gate, H, X, Z, flatten, host_tokens, trace
+import math
+
+from qqpu.machine import (CCX, CX, CZ, END, NQ, NQC, SWAP, Gate, H, S, Sdg, T, Tdg, X, Y, Z,
+                          flatten, host_tokens, is_complex, trace, value)
 
 SYSTEM = (
     "You are a helpful assistant with a quantum processing unit (QPU) built into your own "
-    "weights. It simulates circuits of up to {nq} qubits exactly (no sampling noise). To answer "
-    "any question about a quantum circuit, write the circuit in OpenQASM 2.0 and call qpu_run; "
-    "never compute amplitudes by hand. Then answer from the QPU's result.\n\n"
+    "weights. It simulates quantum circuits exactly (no sampling noise). To answer any question "
+    "about a quantum circuit, write the circuit in OpenQASM 2.0 and call qpu_run; never compute "
+    "amplitudes by hand. Then answer from the QPU's result.\n\n"
     "QPU reference\n"
-    "- Gates: h, x, z, cx, cz, ccx (Toffoli), ccz, swap. Nothing else (no rz, s, t, y, init).\n"
+    "- Gates: h, x, y, z, s, sdg, t, tdg, p(theta) for theta a multiple of pi/4, cx, cy, cz, "
+    "cs, csdg, cp(theta) (theta a multiple of pi/4: cp(pi/2) = cs, cp(pi/4) = controlled-T), "
+    "ccx (Toffoli), ccz, swap. Not supported: rx, ry, rz, u, ch, init.\n"
+    "- Up to {nq} qubits with h, x, z, cx, cz, ccx, ccz, swap only; up to {nqc} qubits when "
+    "the circuit uses y, s, t or phases.\n"
     "- The QPU starts in |0...0>. q[0] is the least significant bit: results are bitstrings "
     "q[n-1]...q[0], as in Qiskit. So |101> means q[2]=1, q[1]=0, q[0]=1.\n"
     "- Measurements are not needed: the QPU returns the exact final state.\n"
@@ -59,9 +66,46 @@ class QasmError(ValueError):
     pass
 
 
-GATES = {"h": 1, "x": 1, "z": 1, "cx": 2, "cnot": 2, "cz": 2, "ccx": 3, "toffoli": 3, "ccz": 3,
-         "swap": 2, "id": 1, "i": 1}
-IGNORED = {"barrier", "measure", "reset_ignored"}
+# name -> (qubits, controls): the last qubit is the target
+GATES = {"h": 1, "x": 1, "y": 1, "z": 1, "s": 1, "sdg": 1, "t": 1, "tdg": 1, "id": 1, "i": 1,
+         "p": 1, "u1": 1, "phase": 1,
+         "cx": 2, "cnot": 2, "cy": 2, "cz": 2, "cs": 2, "csdg": 2, "cp": 2, "cu1": 2,
+         "cphase": 2, "swap": 2, "ccx": 3, "toffoli": 3, "ccz": 3}
+PARAM = {"p", "u1", "phase", "cp", "cu1", "cphase"}
+IGNORED = {"barrier", "measure"}
+BASE = {"x": X, "y": Y, "z": Z, "s": S, "sdg": Sdg, "t": T, "tdg": Tdg}
+PHASES = {0: [], 1: [T], 2: [S], 3: [S, T], 4: [Z], 5: [Z, T], 6: [Sdg], 7: [Tdg]}
+
+
+def angle_steps(expr: str) -> int:
+    """theta / (pi / 4) for an angle like pi/2, -pi/4, 3*pi/4, 0.785398..."""
+    e = expr.replace(" ", "").lower()
+    if not re.fullmatch(r"[0-9pi.+\-*/()e]+", e):
+        raise QasmError(f"bad angle {expr!r}")
+    try:
+        theta = eval(e.replace("pi", "math.pi"), {"math": math, "__builtins__": {}})  # noqa: S307
+    except Exception as ex:  # noqa: BLE001
+        raise QasmError(f"bad angle {expr!r}") from ex
+    m = theta / (math.pi / 4)
+    if abs(m - round(m)) > 1e-6:
+        raise QasmError(f"angle {expr} is not a multiple of pi/4: the QPU is exact over "
+                        "Clifford+T phases only")
+    return round(m) % 8
+
+
+def make_gates(g: str, a: list[int], param: str | None) -> list:
+    *ctrl, tgt = a
+    if g in ("id", "i"):
+        return []
+    if g == "h":
+        return [H(tgt)]
+    if g == "swap":
+        return SWAP(a[0], a[1])
+    if g in PARAM:
+        return [f(tgt, *ctrl) for f in PHASES[angle_steps(param or "")]]
+    base = {"cnot": "x", "cx": "x", "ccx": "x", "toffoli": "x", "cy": "y", "cz": "z",
+            "ccz": "z", "cs": "s", "csdg": "sdg"}.get(g, g)
+    return [BASE[base](tgt, *ctrl)]
 
 
 def parse_qasm(src: str) -> tuple[int, list[Gate]]:
@@ -81,45 +125,43 @@ def parse_qasm(src: str) -> tuple[int, list[Gate]]:
         m = re.fullmatch(r"qreg\s+(\w+)\s*\[\s*(\d+)\s*\]", s) or \
             re.fullmatch(r"qubit\s*\[\s*(\d+)\s*\]\s*(\w+)", s)
         if m:
-            if s.startswith("qreg"):
-                name, size = m[1], int(m[2])
-            else:
-                name, size = m[2], int(m[1])
+            name, size = (m[1], int(m[2])) if s.startswith("qreg") else (m[2], int(m[1]))
             regs[name] = (n, size)
             n += size
             continue
-        m = re.fullmatch(r"([A-Za-z_]\w*)\s+(.+)", s)
+        m = re.fullmatch(r"([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s+(.+)", s)
         if not m:
             raise QasmError(f"cannot parse: {s!r}")
-        g, args = m[1].lower(), [a.strip() for a in m[2].split(",")]
+        g, param, args = m[1].lower(), m[2], [x.strip() for x in m[3].split(",")]
         if g in IGNORED:
             continue
         if g not in GATES:
-            raise QasmError(f"gate {g!r} is not supported: the QPU has h, x, z, cx, cz, ccx, "
-                            "ccz, swap")
+            raise QasmError(f"gate {g!r} is not supported. Supported: " + ", ".join(GATES))
+        if (g in PARAM) != (param is not None):
+            raise QasmError(f"{g} {'needs' if g in PARAM else 'takes no'} angle: {s!r}")
         if GATES[g] == 1 and len(args) > 1:  # "h q[0], q[1]": one gate per qubit
-            args_list = [[a] for a in args]
+            groups = [[x] for x in args]
         else:
-            args_list = [args]
-        if any(len(a) != GATES[g] for a in args_list):
+            groups = [args]
+        if any(len(x) != GATES[g] for x in groups):
             raise QasmError(f"{g} takes {GATES[g]} qubit(s): {s!r}")
 
-        for args in args_list:
-            def qubits(a):
-                mm = re.fullmatch(r"(\w+)\s*\[\s*(\d+)\s*\]", a)
-                if mm:
-                    if mm[1] not in regs:
-                        raise QasmError(f"unknown register {mm[1]!r}")
-                    base, size = regs[mm[1]]
-                    if int(mm[2]) >= size:
-                        raise QasmError(f"{a} is out of range")
-                    return [base + int(mm[2])]
-                if a in regs:
-                    base, size = regs[a]
-                    return list(range(base, base + size))
-                raise QasmError(f"bad qubit {a!r}")
+        def qubits(x):
+            mm = re.fullmatch(r"(\w+)\s*\[\s*(\d+)\s*\]", x)
+            if mm:
+                if mm[1] not in regs:
+                    raise QasmError(f"unknown register {mm[1]!r}")
+                base, size = regs[mm[1]]
+                if int(mm[2]) >= size:
+                    raise QasmError(f"{x} is out of range")
+                return [base + int(mm[2])]
+            if x in regs:
+                base, size = regs[x]
+                return list(range(base, base + size))
+            raise QasmError(f"bad qubit {x!r}")
 
-            qs = [qubits(a) for a in args]
+        for grp in groups:
+            qs = [qubits(x) for x in grp]
             width = max(len(x) for x in qs)
             if any(len(x) not in (1, width) for x in qs):
                 raise QasmError(f"register sizes do not match: {s!r}")
@@ -127,41 +169,57 @@ def parse_qasm(src: str) -> tuple[int, list[Gate]]:
                 a = [x[0] if len(x) == 1 else x[i] for x in qs]
                 if len(set(a)) != len(a):
                     raise QasmError(f"repeated qubit in {s!r}")
-                if g in ("id", "i"):
-                    continue
-                gates.append({"h": lambda: H(a[0]), "x": lambda: X(a[0]), "z": lambda: Z(a[0]),
-                              "cx": lambda: CX(a[0], a[1]), "cnot": lambda: CX(a[0], a[1]),
-                              "cz": lambda: CZ(a[0], a[1]), "ccx": lambda: CCX(*a),
-                              "toffoli": lambda: CCX(*a), "ccz": lambda: Z(a[2], a[0], a[1]),
-                              "swap": lambda: SWAP(a[0], a[1])}[g]())
+                gates += make_gates(g, a, param)
     if not regs:
         raise QasmError("no qubit register declared (qreg q[n];)")
-    if n > NQ:
-        raise QasmError(f"the QPU holds at most {NQ} qubits, the circuit declares {n}")
     gates = flatten(gates)
+    cap = NQC if is_complex(gates) else NQ
+    if n > cap:
+        raise QasmError(f"the QPU holds at most {cap} qubits for this circuit, it declares {n}"
+                        + (" (y, s, t and phases need complex mode: 4 qubits)" if cap == NQC
+                           else ""))
     if len(gates) + 1 > 64:
-        raise QasmError("too many gates (at most 63 after expanding swaps)")
+        raise QasmError("too many gates (at most 63 after expanding swaps and phases)")
     if sum(g.op == "h" for g in gates) > 28:
         raise QasmError("too many h gates (at most 28)")
     return n, gates
 
 
-def format_result(amps: list[int], k: int, nq: int, ntok: int) -> str:
+def norm2(x: tuple) -> tuple[int, int]:
+    """|x|^2 = A + B sqrt(2) for x in Z[w]."""
+    a0, a1, a2, a3 = x
+    return a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3, a0 * a1 + a1 * a2 + a2 * a3 - a3 * a0
+
+
+def exact_p(ab: tuple[int, int], k: int) -> str:
+    A, B = ab
+    if B == 0:
+        return str(Fraction(A, 2**k))
+    return f"({A} {'+' if B > 0 else '-'} {abs(B)}*sqrt(2))/{2**k}"
+
+
+def format_result(amps: list[tuple], k: int, nq: int, ntok: int = 0) -> str:
     lines = [f"QPU run: {nq} qubits, exact final state. Basis states are written "
              f"|q[{nq - 1}]...q[0]>, so the rightmost bit is q[0]."]
-    probs = [Fraction(a * a, 2**k) for a in amps]
+    probs = [norm2(a) for a in amps]
     for i, a in enumerate(amps):
-        if a == 0:
+        if not any(a):
             continue
-        amp = f"{a}/sqrt(2^{k})" if k else f"{a}"
+        z = value(a) / 2 ** (k / 2)
         bits = ", ".join(f"q[{b}]={i >> b & 1}" for b in reversed(range(nq)))
-        lines.append(f"  |{i:0{nq}b}> ({bits}): amplitude {amp} = {a / 2 ** (k / 2):+.6f}, "
-                     f"probability {float(probs[i]):.6f} ({probs[i]})")
+        if a[1:] == (0, 0, 0):
+            amp = f"{a[0]}/sqrt(2^{k}) = {z.real:+.6f}" if k else f"{a[0]}"
+        else:
+            amp = f"{z.real:+.6f}{z.imag:+.6f}i"
+        p = (probs[i][0] + probs[i][1] * 2**0.5) / 2**k
+        lines.append(f"  |{i:0{nq}b}> ({bits}): amplitude {amp}, probability {p:.6f} "
+                     f"({exact_p(probs[i], k)})")
     lines.append("All other basis states have amplitude 0.")
     lines.append("Probability that each qubit is measured as 1:")
     for b in range(nq):
-        p1 = sum((p for i, p in enumerate(probs) if i >> b & 1), Fraction(0))
-        lines.append(f"  P(q[{b}]=1) = {float(p1):.6f} ({p1})")
+        A = sum(pr[0] for i, pr in enumerate(probs) if i >> b & 1)
+        B = sum(pr[1] for i, pr in enumerate(probs) if i >> b & 1)
+        lines.append(f"  P(q[{b}]=1) = {(A + B * 2 ** 0.5) / 2 ** k:.6f} ({exact_p((A, B), k)})")
     return "\n".join(lines)
 
 
@@ -236,7 +294,8 @@ class Chat:
             t0 = time.time()
             tr = trace(gates, nq)
             return {"nq": nq, "gates": len(gates), "tokens": 0, "k": tr.k, "amps": tr.amps,
-                    "seconds": time.time() - t0, "ended": True, "host": True}
+                    "seconds": time.time() - t0, "ended": True, "host": True,
+                    "complex": tr.cplx}
         host = host_tokens(gates, nq)
         t0 = time.time()
         logits = self._feed([self.v0 + t for t in host])
@@ -249,10 +308,10 @@ class Chat:
             logits = self._feed([t + self.v0])
         if t == END:
             self.ids.append(self.v0 + END)  # END closes the run (not fed: the run is over)
-        amps = self.dev.read(self.cache, nq)
         tr = trace(gates, nq)
+        amps = self.dev.read(self.cache, nq, tr.cplx, tr.final_buffer)
         run = {"nq": nq, "gates": len(gates), "tokens": len(toks), "k": tr.k, "amps": amps,
-               "seconds": time.time() - t0, "ended": t == END}
+               "seconds": time.time() - t0, "ended": t == END, "complex": tr.cplx}
         if check:
             run["exact"] = toks == tr.tokens[len(host):] and amps == tr.amps
         return run
@@ -262,7 +321,7 @@ class Chat:
     def ask(self, question: str, max_new: int = 768, check: bool = True,
             max_calls: int = 3) -> Turn:
         t0 = time.time()
-        system = SYSTEM_NONE if self.mode == "none" else SYSTEM.format(nq=NQ)
+        system = SYSTEM_NONE if self.mode == "none" else SYSTEM.format(nq=NQ, nqc=NQC)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": question}]
         prompt = self.tok.apply_chat_template(
             msgs, tools=None if self.mode == "none" else TOOLS, add_generation_prompt=True,

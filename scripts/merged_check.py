@@ -22,7 +22,7 @@ from transformers import AutoModelForImageTextToText, AutoTokenizer
 from qqpu import circuits
 from qqpu.circuit import QPU
 from qqpu.hf import Runner
-from qqpu.machine import host_tokens, trace
+from qqpu.machine import host_tokens, trace, value
 
 PROMPTS = [
     "The capital of France is",
@@ -84,11 +84,11 @@ def main() -> None:
         bad = [t for t in owned if top[t] != seq[t + 1]]
         host = host_tokens(gates, nq)
         want = tr.tokens[len(host):]
-        run = runner.run(tok.encode("Run:") and [t for t in host], nq, check=want)
+        run = runner.run(host, nq, tr.cplx, tr.final_buffer, check=want)
         ok_gen = run.tokens == want
         ok_state = run.amps == tr.amps
-        ref = circuits.qiskit_statevector(nq, gates).real
-        sv = np.array(run.amps, float) / 2 ** (tr.k / 2)
+        ref = circuits.qiskit_statevector(nq, gates)
+        sv = np.array([value(a) for a in run.amps]) / 2 ** (tr.k / 2)
         ok_q = np.allclose(sv, ref, atol=1e-9)
         ok = not bad and ok_gen and ok_state and ok_q
         all_ok &= ok
