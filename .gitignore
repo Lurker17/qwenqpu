@@ -1,0 +1,6 @@
+.venv/
+build/
+models/
+__pycache__/
+*.pyc
+scratch_*.py

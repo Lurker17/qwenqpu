@@ -1,0 +1,25 @@
+[project]
+name = "qqpu"
+version = "0.1.0"
+description = "A qubit simulator compiled into the weights of a stock Qwen3.5 model"
+requires-python = ">=3.11"
+dependencies = [
+    "chipformer[hf]",
+    "qgpu",
+    "numpy>=1.26",
+    "flash-linear-attention>=0.6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "qiskit", "qiskit-aer"]
+
+[tool.uv.sources]
+chipformer = { git = "https://github.com/divagr18/qwenputer", rev = "f07a0b2e38271454c4d455dc2b9bf78d3d399170" }
+qgpu = { path = "../vendor/qwenGPU", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qqpu"]
