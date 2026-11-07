@@ -27,3 +27,9 @@ merge recipe). Write-up: `docs/qwenqpu.html` (published as an artifact).
 - Speed: static cache / CUDA graphs (Qwenputer fast.py), skip inactive controlled pairs.
 - Overlay (share Qwen dims) to shrink the checkpoint.
 - Shots in complex mode (needs |x|^2 in Z[sqrt2]).
+
+## Later
+- Demo video (user request, 2026-11-07): short clip of a run. Candidate storyboard: Qwen writes
+  QASM -> GATE/VAL tokens stream out -> amplitude bars update (Grover-3) -> shots land on 101 ->
+  Qwen answers. Source data: build/demo.json, build/grover_frames.json. Could use the Motion
+  artifact type (exports MP4) or record a real run.
